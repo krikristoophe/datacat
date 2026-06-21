@@ -127,6 +127,9 @@ pub fn test_config(token: TokenConfig, tweak: impl FnOnce(&mut Config)) -> Confi
         logs_auth: LogsAuth::Jwt,
         // Lecture ouverte par défaut en test ; un test dédié surcharge en Static.
         query_auth: LogsAuth::None,
+        query_sql_enabled: true,
+        query_sql_timeout: Duration::from_secs(10),
+        query_sql_max_rows: 1_000,
         cors: CorsOrigins::Any,
         alerting: AlertingConfig {
             rules_file: None,

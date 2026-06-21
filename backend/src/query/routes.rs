@@ -329,3 +329,72 @@ pub async fn query_journeys(
         .map_err(db_err)?;
     Ok(Json(json!({ "journeys": rows })))
 }
+
+// ── SQL ad-hoc (lecture seule) ────────────────────────────────────────────────
+
+#[derive(Debug, Deserialize)]
+pub struct SqlRequest {
+    pub sql: String,
+    pub limit: Option<i64>,
+}
+
+/// `POST /v1/query/sql` — SQL **lecture seule** ad-hoc (debug/analyse, ex. via MCP).
+///
+/// Désactivé par défaut (`QUERY_SQL_ENABLED`). Défenses : seules les requêtes `SELECT`/`WITH`
+/// sont acceptées (instruction unique, `;` interdit), exécutées dans une transaction
+/// `READ ONLY` avec `statement_timeout`, et encapsulées `SELECT to_jsonb(...) FROM (<sql>) LIMIT n`
+/// (la transaction READ ONLY bloque toute écriture/DDL par défense en profondeur).
+pub async fn query_sql(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(req): Json<SqlRequest>,
+) -> AppResult<impl IntoResponse> {
+    authorize_query(&state, &headers)?;
+    if !state.config.query_sql_enabled {
+        return Err(AppError::Forbidden(
+            "endpoint SQL lecture seule désactivé (QUERY_SQL_ENABLED)".into(),
+        ));
+    }
+
+    let sql = req.sql.trim().trim_end_matches(';').trim();
+    let lowered = sql.to_ascii_lowercase();
+    if !(lowered.starts_with("select") || lowered.starts_with("with")) {
+        return Err(AppError::bad_request(
+            "seules les requêtes SELECT/WITH sont autorisées",
+        ));
+    }
+    if sql.contains(';') {
+        return Err(AppError::bad_request(
+            "requête unique : le caractère ';' est interdit",
+        ));
+    }
+
+    let max = state.config.query_sql_max_rows;
+    let limit = clamp_limit(req.limit, max, max);
+    let timeout_ms = state.config.query_sql_timeout.as_millis() as i64;
+    let wrapped = format!("SELECT to_jsonb(t) FROM ({sql}) AS t LIMIT {}", limit + 1);
+
+    let mut tx = state.pool.begin().await.map_err(db_err)?;
+    sqlx::query("SET TRANSACTION READ ONLY")
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    sqlx::query(&format!("SET LOCAL statement_timeout = {timeout_ms}"))
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    let result = sqlx::query_scalar::<_, Value>(&wrapped)
+        .fetch_all(&mut *tx)
+        .await;
+    let _ = tx.rollback().await;
+
+    let mut rows = result.map_err(|e| match e {
+        sqlx::Error::Database(db) => AppError::bad_request(format!("erreur SQL: {}", db.message())),
+        other => AppError::Internal(other.into()),
+    })?;
+    let truncated = rows.len() as i64 > limit;
+    rows.truncate(limit as usize);
+    Ok(Json(
+        json!({ "row_count": rows.len(), "truncated": truncated, "rows": rows }),
+    ))
+}

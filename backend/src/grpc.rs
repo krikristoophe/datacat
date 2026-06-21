@@ -62,6 +62,7 @@ pub(crate) fn bearer<T>(request: &Request<T>) -> Option<String> {
 pub(crate) fn app_err_to_status(e: AppError) -> Status {
     match e {
         AppError::Unauthorized(m) => Status::unauthenticated(m),
+        AppError::Forbidden(m) => Status::permission_denied(m),
         AppError::RateLimited { scope, .. } => {
             Status::resource_exhausted(format!("rate limit: {scope}"))
         }

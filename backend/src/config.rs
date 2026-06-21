@@ -170,6 +170,12 @@ pub struct Config {
     pub logs_auth: LogsAuth,
     /// Auth des endpoints de lecture (`/v1/query/*`).
     pub query_auth: LogsAuth,
+    /// Endpoint SQL lecture seule (`/v1/query/sql`) activé ? Défaut false.
+    pub query_sql_enabled: bool,
+    /// Timeout d'une requête SQL ad-hoc.
+    pub query_sql_timeout: Duration,
+    /// Nombre max de lignes renvoyées par une requête SQL ad-hoc.
+    pub query_sql_max_rows: i64,
     pub cors: CorsOrigins,
     /// Moteur d'alerting (règles + notifications). Désactivé si non configuré.
     pub alerting: AlertingConfig,
@@ -277,6 +283,9 @@ impl Config {
             token,
             logs_auth,
             query_auth,
+            query_sql_enabled: env_bool("QUERY_SQL_ENABLED", false)?,
+            query_sql_timeout: env_duration("QUERY_SQL_TIMEOUT", Duration::from_secs(10))?,
+            query_sql_max_rows: env_parse("QUERY_SQL_MAX_ROWS", 1_000)?,
             cors,
             alerting: AlertingConfig::from_env()?,
         })

@@ -25,6 +25,10 @@ pub enum AppError {
     #[error("non autorisé: {0}")]
     Unauthorized(String),
 
+    /// Action interdite (ex. fonctionnalité désactivée par configuration).
+    #[error("interdit: {0}")]
+    Forbidden(String),
+
     /// Un des niveaux de rate limiting a été atteint.
     #[error("trop de requêtes ({scope})")]
     RateLimited {
@@ -71,6 +75,10 @@ impl IntoResponse for AppError {
                 Json(json!({ "error": message })),
             )
                 .into_response(),
+
+            AppError::Forbidden(message) => {
+                (StatusCode::FORBIDDEN, Json(json!({ "error": message }))).into_response()
+            }
 
             AppError::RateLimited {
                 scope,

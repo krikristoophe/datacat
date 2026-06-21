@@ -1,7 +1,10 @@
-# Hot read layer (`/v1/query/*`)
+---
+title: "Hot Reads"
+description: "Read-only query endpoints over PostgreSQL for recent (hot) data: logs, events, metrics, traces, journeys, and ad-hoc SQL."
+---
 
 **Read-only** endpoints over PostgreSQL (hot data). Decoupled from ingestion. For bulk
-analysis, see cold reads ([read-cold.md](read-cold.md), DataFusion/Parquet).
+analysis, see [Cold reads](../read-cold/) (DataFusion/Parquet).
 
 Authentication: configurable via `QUERY_AUTH` (`auto`|`static`|`jwt`|`none`) + `QUERY_TOKEN`,
 `Authorization: Bearer` header.
@@ -42,4 +45,4 @@ Queryable tables: `events`, `logs`, `spans`, `metric_points` (correlatable via
 
 ## Agent access (MCP)
 
-The embedded [MCP HTTP server](mcp.md) (route `/mcp`) exposes these queries as tools for Claude.
+The embedded [MCP HTTP server](../mcp/) (route `/mcp`) exposes these queries as tools for Claude.

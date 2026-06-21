@@ -1,4 +1,7 @@
-# OpenTelemetry technical logs (OTLP)
+---
+title: "OTLP Logs"
+description: "Ingesting OpenTelemetry technical logs into Datacat."
+---
 
 Datacat ingests **technical logs** in the **OpenTelemetry / OTLP-HTTP (JSON)** format, on the
 same foundation as product events: a table partitioned by day, idempotent, written with `COPY`.
@@ -116,7 +119,7 @@ A full example (Rust backend + React app) is provided under `examples/` (see its
 
 ## 5. Related streams
 
-OTLP **traces** ([traces.md](traces.md)) and **metrics** ([otel-metrics.md](otel-metrics.md)) are
-ingested by the same generic mechanism (`Ingestable` + an idempotent partitioned table), correlated
-with logs through the shared `trace_id` / `service_name`. Cold analytical reads over Parquet are
-described in [read-cold.md](read-cold.md).
+OTLP **traces** ([traces](../traces/)) and **metrics** ([metrics](../otel-metrics/)) are ingested by
+the same generic mechanism (`Ingestable` + an idempotent partitioned table), correlated with logs
+through the shared `trace_id` / `service_name`. Cold analytical reads over Parquet are described in
+[cold reads](../read-cold/).

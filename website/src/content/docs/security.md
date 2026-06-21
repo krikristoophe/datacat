@@ -1,4 +1,7 @@
-# Security & auditability (HDS posture)
+---
+title: "Security"
+description: "Security model, hardening and HDS-grade auditability."
+---
 
 The system must be able to pass a **rigorous HDS-type security audit** without reservations. This
 document describes the threat model, the controls, and what is — honestly — guaranteed or not.
@@ -31,9 +34,9 @@ authentication of the content.
 - No hard-coded secret in the SDKs: the token is fetched at runtime, renewed, never embedded.
 - The configured public key is supplied via `[token]` in `datacat.toml`
   (`public_key_pem` / `public_key_file` / `jwks_url`), with the PEM passed as a `${ENV}` reference
-  rather than written in clear text — see [configuration.md](configuration.md).
+  rather than written in clear text — see [configuration](../configuration/).
 - Checks: signature, `exp` (+ leeway), `iat`, required claims (`actor_id`, `session_id`),
-  `iss`/`aud` if configured. Details: [`token-contract.md`](token-contract.md) §7.
+  `iss`/`aud` if configured. Details: [token](../token/) §7.
 
 ### 3.2 Two-level rate limiting + global safety net (§7.2)
 - **Per `session_id`** (token bucket): prevents one session from impacting its peers —

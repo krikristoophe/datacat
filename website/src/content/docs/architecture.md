@@ -1,4 +1,7 @@
-# Architecture & design decisions
+---
+title: "Architecture"
+description: "Design decisions of the ingestion-first v1: idempotence × partitioning, the write path, and how the architecture prepares future extensions."
+---
 
 This document explains the structuring choices of v1 and how the architecture **prepares**
 for the out-of-scope extensions (spec §9) without deploying them.
@@ -49,8 +52,8 @@ key must contain the partition column. Which time column should we choose?
 **Decision: partition by `timestamp_client`**, idempotence key `(timestamp_client, event_id)`.
 This is the only choice that reconciles time partitioning with native idempotence.
 
-This imposes an **SDK contract** (see `CONTRACT.md` §2.2): `event_id` **and** `timestamp_client`
-are frozen at creation and never regenerated on retry. Both SDKs honor this.
+This imposes an **SDK contract** (see [Contract](../contract/) §2.2): `event_id` **and**
+`timestamp_client` are frozen at creation and never regenerated on retry. Both SDKs honor this.
 
 ### Associated guardrails
 
@@ -93,7 +96,7 @@ fails: the event is **dropped** (`dropped_channel_full_total` counter) and the r
 *unbiased loss tolerance* (§2): we do not return `5xx`, which would trigger retries that worsen
 the overload. **Never a duplicate**, however: idempotence is guaranteed in the database.
 
-## 6. Security (summary; details in `security.md`)
+## 6. Security (summary; details in [Security](../security/))
 
 Public endpoint, not strongly authenticated. Defenses are **100% server-side**:
 token verification by **asymmetric** signature (public key only — ingestion cannot forge a
@@ -106,12 +109,29 @@ banning of anomalous IPs, traceable structured logs, TLS at deployment.
 |---|---|
 | **Cold storage** (Parquet/Iceberg on S3 EU) | `events` is already partitioned by day: an export job reads partition by partition into Parquet, without touching ingestion. |
 | **Analytical reads** (DataFusion/DuckDB) | A separate read layer plugged onto the cold tier (and/or the hot one). The ingestion core references no reads. No read index in v1 to preserve write throughput; they will be created on the cold side. |
-| **Technical logs** | **Ingested in v1** via `POST /v1/logs` (OTLP/HTTP), on the same generic partitioned/idempotent base as events, correlated via `tenant_id` / `actor_id` / `session_id` and `trace_id`. See `otel-logs.md`. |
-| **Cold S3 storage** | Date-partitioned Parquet export via the cold exporter — a standalone crate, also embedded & scheduled in the backend (outside the ingestion core). See `cold-storage.md`. |
+| **Technical logs** | **Ingested in v1** via `POST /v1/logs` (OTLP/HTTP), on the same generic partitioned/idempotent base as events, correlated via `tenant_id` / `actor_id` / `session_id` and `trace_id`. See [OTLP logs](../otel-logs/). |
+| **Cold S3 storage** | Date-partitioned Parquet export via the cold exporter — a standalone crate, also embedded & scheduled in the backend (outside the ingestion core). See [Cold storage](../cold-storage/). |
 | **Write scale-out** (Citus / Redpanda) | The writer is isolated behind a channel: a distributed buffer can be inserted in front, or sharding via Citus, without changing the ingestion contract. |
 | **Read scale-out** (Ballista) | Guaranteed by the open format (Iceberg) on the cold side. |
 
-## 8. Module map (backend)
+## 8. Configuration & multi-project
+
+Configuration is a single **TOML file** (`datacat.toml`, template `datacat.example.toml`)
+that describes the whole deployment, plus **one TOML file per project** under `projects/*.toml`.
+Every string value can reference an environment variable with `${VAR}` (or `${VAR:-default}`),
+resolved at startup, so no secret is committed. A legacy environment-variable fallback remains
+for development and the test suite. See [Configuration](../configuration/) for the full reference.
+
+Datacat is **multi-project at the configuration level**: each project carries its own alerting
+rules and notification channels, and the backend runs **one alerting evaluator per project**.
+The ingestion pipeline and the stored data are **shared** — project isolation is at the
+configuration level, not at the data level.
+
+The cold export is driven from the same config: an `[export]` TOML section schedules the
+embedded exporter (the cold export logic is a standalone crate, also embedded & scheduled in
+the backend).
+
+## 9. Module map (backend)
 
 Split into coherent submodules (domains on top of a shared infrastructure):
 

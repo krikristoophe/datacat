@@ -1,4 +1,7 @@
-# Alerting engine (pluggable actions: Slack, e-mail, webhook)
+---
+title: "Alerting"
+description: "Configuring alerts on ingested data."
+---
 
 Datacat ships a lightweight alerting engine: **declarative rules** are evaluated periodically over
 the ingested data (`logs`, `metric_points`, …), and each threshold crossing triggers one or more
@@ -8,7 +11,7 @@ with no rules, or with no action or channel configured, it stays disabled (a no-
 Alerting is configured **per project**. Each project is a TOML file under `projects/*.toml` that
 carries its alerting rules (`[[alerting.rules]]`) and, optionally, its own notification channels
 (`[notifications.slack]` / `[notifications.email]`). Datacat runs **one evaluator per project**.
-See [configuration.md](configuration.md) for how projects are loaded.
+See [configuration](../configuration/) for how projects are loaded.
 
 ## 1. Activation
 
@@ -340,5 +343,5 @@ The SMTP transport uses **STARTTLS via rustls** (no OpenSSL). The e-mail channel
 | `[projects].dir` / `[projects].files` | `datacat.toml` | which project files to load |
 
 All settings are optional; the engine disables itself cleanly for a project whose configuration is
-incomplete. See [configuration.md](configuration.md) for the full configuration model and secret
+incomplete. See [configuration](../configuration/) for the full configuration model and secret
 expansion.

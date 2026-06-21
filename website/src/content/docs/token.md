@@ -1,4 +1,7 @@
-# Ingestion token contract (issuance specification)
+---
+title: "Token"
+description: "The ingestion token contract and asymmetric signature verification."
+---
 
 > **Scope.** Token **issuance** is **out of scope** for Datacat (spec §7.3.1): it belongs to
 > each **consuming backend** (Swappy, or any other project using the analytics). This document
@@ -6,7 +9,7 @@
 > issuance **without ambiguity**. On the Datacat side, only **verification** is implemented
 > (public key only), in accordance with this contract.
 
-See also `CONTRACT.md` §4 (summary integrated into the shared contract).
+See also the [ingestion contract](../contract/) §4 (summary integrated into the shared contract).
 
 ## 1. Principle
 
@@ -18,7 +21,7 @@ verifies the signature using the **public key only**.
 Guarantee: the ingestion service (the public, more exposed endpoint) holds **no secret capable
 of forging** a token. If ingestion is compromised, an attacker cannot create valid tokens. The
 token is a **traffic-quality filter**, not a proof of content integrity (event content remains
-forgeable — see `security.md`).
+forgeable — see [security](../security/)).
 
 ## 2. Signature algorithm
 
@@ -155,14 +158,14 @@ expire), then remove it.
 
 > In dev/test, an environment-variable fallback exists for these settings (`TOKEN_ALG`,
 > `TOKEN_PUBLIC_KEY_FILE` / `TOKEN_PUBLIC_KEY_PEM`, `TOKEN_JWKS_URL`, …) when no `datacat.toml`
-> is present. See [`configuration.md`](configuration.md).
+> is present. See [configuration](../configuration/).
 
 ## 7. Verification rules applied by Datacat
 
 Failure → `401`. In order:
 
 1. The `Authorization: Bearer <jwt>` header is present and well-formed (or the body's `token`
-   field in the `sendBeacon` fallback, see `CONTRACT.md` §1.1).
+   field in the `sendBeacon` fallback, see the [ingestion contract](../contract/) §1.1).
 2. `alg` ∈ {`EdDSA`, `RS256`} (configurable via `[token].algorithms`) — **never
    `none`/symmetric**. Key selection via `kid` (exact match if provided).
 3. Valid signature against the **public key**.
@@ -176,4 +179,4 @@ Failure → `401`. In order:
 This mechanism guarantees that the traffic originates from **sessions authenticated** by the
 main system and enables **revocation** (key rotation). It does **not** guarantee that the
 content is unforgeable: a legitimate user can emit fake "valid" events. This is the appropriate
-level of guarantee for noise-tolerant analytics. See `security.md`.
+level of guarantee for noise-tolerant analytics. See [security](../security/).

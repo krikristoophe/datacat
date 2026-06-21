@@ -1,67 +1,67 @@
-# Guide d'intégration rapide
+# Quick integration guide
 
-Objectif : brancher Datacat sur une application existante **sans friction**. Deux étapes :
-(1) exposer un endpoint de token côté backend consommateur, (2) initialiser le SDK côté client.
+Goal: wire Datacat into an existing application **with no friction**. Two steps:
+(1) expose a token endpoint on the consumer backend, (2) initialize the SDK on the client side.
 
-## 1. Côté backend consommateur : endpoint de token
+## 1. On the consumer backend: token endpoint
 
-Le SDK ne contient **aucun secret**. Il récupère, à l'exécution, un token court-vécu signé par
-votre backend (déjà authentifié). Exposez un endpoint **authentifié** qui renvoie ce token.
+The SDK contains **no secret**. At runtime it retrieves a short-lived token signed by
+your (already authenticated) backend. Expose an **authenticated** endpoint that returns this token.
 
-Voir [`token-contract.md`](token-contract.md) pour la spécification complète et des exemples
-d'émission (Node `jose`, Python `PyJWT`). Exemple minimal (Express) :
+See [`token-contract.md`](token-contract.md) for the full specification and issuance examples
+(Node `jose`, Python `PyJWT`). Minimal example (Express):
 
 ```ts
 app.get("/api/analytics-token", requireAuth, async (req, res) => {
   const token = await issueIngestToken(
     { id: req.user.id, tenantId: req.user.tenantId },
-    req.sessionId,            // l'identifiant de session que vous propagez
+    req.sessionId,            // the session identifier you propagate
   );
   res.json({ token });
 });
 ```
 
-Côté Datacat (ingestion), configurez la **clé publique** correspondante (`TOKEN_PUBLIC_KEY_FILE`
-ou `TOKEN_JWKS_URL`) — cf. [`deployment.md`](deployment.md).
+On the Datacat side (ingestion), configure the corresponding **public key** (`TOKEN_PUBLIC_KEY_FILE`
+or `TOKEN_JWKS_URL`) — see [`deployment.md`](deployment.md).
 
-## 2. SDK Web (TypeScript / React)
+## 2. Web SDK (TypeScript / React)
 
-Installation : le package `@datacat/sdk-web` (dossier [`sdks/typescript/`](../sdks/typescript/)).
+Installation: the `@datacat/sdk-web` package (folder [`sdks/typescript/`](../sdks/typescript/)).
 
 ```ts
 import { createDatacatClient } from "@datacat/sdk-web";
 
 const analytics = createDatacatClient({
   endpoint: "https://ingest.example.com/v1/events",
-  // Récupère le token via VOTRE endpoint authentifié ; renouvelé automatiquement.
+  // Retrieves the token via YOUR authenticated endpoint; renewed automatically.
   getToken: () =>
     fetch("/api/analytics-token", { credentials: "include" })
       .then((r) => r.json())
       .then((d) => d.token),
-  // actor_id peut être défini ici, ou plus tard via identify() après authentification.
+  // actor_id can be set here, or later via identify() after authentication.
   actorId: currentUser?.id,
   tenantId: currentUser?.tenantId,
-  // redaction optionnelle (jamais de données sensibles dans properties)
+  // optional redaction (never any sensitive data in properties)
   redact: (props) => ({ ...props, password: undefined }),
 });
 
-// Après authentification de l'utilisateur :
+// After the user authenticates:
 analytics.identify({ actorId: user.id, tenantId: user.tenantId });
 
-// Émettre un event métier :
+// Emit a business event:
 analytics.track("validate_planning", { planningId: 42, count: 3 });
 
-// Le SDK envoie par batch automatiquement ; flush de fin de page géré (sendBeacon/keepalive).
-// Pour forcer : await analytics.flush();
+// The SDK sends in batches automatically; end-of-page flush is handled (sendBeacon/keepalive).
+// To force it: await analytics.flush();
 ```
 
-Le SDK gère : génération d'`event_id` (figé), `timestamp_client` (figé), batching, retry
-idempotent (même `event_id` sur renvoi), persistance du `session_id` (sessionStorage),
-renouvellement du token, et flush de fin de session via `navigator.sendBeacon`/`fetch keepalive`.
+The SDK handles: `event_id` generation (frozen), `timestamp_client` (frozen), batching,
+idempotent retry (same `event_id` on resend), `session_id` persistence (sessionStorage),
+token renewal, and end-of-session flush via `navigator.sendBeacon`/`fetch keepalive`.
 
-## 3. SDK Mobile (Flutter / Dart)
+## 3. Mobile SDK (Flutter / Dart)
 
-Package `datacat_sdk` (dossier [`sdks/flutter/`](../sdks/flutter/)).
+`datacat_sdk` package (folder [`sdks/flutter/`](../sdks/flutter/)).
 
 ```dart
 import 'package:datacat_sdk/datacat_sdk.dart';
@@ -73,18 +73,18 @@ final analytics = DatacatClient(
       final res = await http.get(Uri.parse('https://app.example.com/api/analytics-token'));
       return (jsonDecode(res.body) as Map)['token'] as String;
     },
-    actorId: currentUser?.id, // ou via identify() après login
+    actorId: currentUser?.id, // or via identify() after login
     tenantId: currentUser?.tenantId,
   ),
 );
 
-// Après authentification :
+// After authentication:
 analytics.identify(actorId: user.id, tenantId: user.tenantId);
 
 analytics.track('validate_planning', {'planningId': 42, 'count': 3});
 ```
 
-Intégration du cycle de vie (flush quand l'app passe en arrière-plan — équivalent `sendBeacon`) :
+Lifecycle integration (flush when the app goes to the background — equivalent to `sendBeacon`):
 
 ```dart
 class _AppState extends State<App> with WidgetsBindingObserver {
@@ -103,17 +103,17 @@ class _AppState extends State<App> with WidgetsBindingObserver {
 }
 ```
 
-Pour persister le `session_id` entre les lancements, fournir une implémentation de
-`DatacatStorage` basée sur `shared_preferences` (voir le README du SDK).
+To persist the `session_id` across launches, provide a `DatacatStorage` implementation
+based on `shared_preferences` (see the SDK README).
 
-## 4. Contrat commun (les deux SDKs)
+## 4. Common contract (both SDKs)
 
-Les deux SDKs produisent des events **conformes au même wire format** ([`CONTRACT.md`](CONTRACT.md)),
-avec la même logique d'`event_id`/`timestamp_client` figés, de batching, de retry idempotent, et
-de gestion du token. `tenant_id` (si dispo) + `actor_id` + `session_id` sont joints à chaque event.
+Both SDKs produce events **conforming to the same wire format** ([`CONTRACT.md`](CONTRACT.md)),
+with the same logic for frozen `event_id`/`timestamp_client`, batching, idempotent retry, and
+token handling. `tenant_id` (if available) + `actor_id` + `session_id` are attached to each event.
 
-## 5. Données sensibles
+## 5. Sensitive data
 
-Les `properties` sont **libres** mais ne doivent **jamais** contenir de données sensibles
-(mots de passe, PII non nécessaire, tokens). Les deux SDKs exposent un hook de redaction et le
-documentent. Cette responsabilité est côté émetteur (cf. `security.md`).
+`properties` are **free-form** but must **never** contain sensitive data
+(passwords, unnecessary PII, tokens). Both SDKs expose a redaction hook and
+document it. This responsibility lies with the emitter (see `security.md`).

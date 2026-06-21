@@ -1,4 +1,7 @@
-# Analytical reads over cold storage — DataFusion on Parquet/S3
+---
+title: "Cold Reads"
+description: "Analytical SQL over cold storage with Apache DataFusion: query the exported Parquet files on S3-compatible storage directly, bypassing PostgreSQL."
+---
 
 ## Overview
 

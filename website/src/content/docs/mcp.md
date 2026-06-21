@@ -1,4 +1,7 @@
-# MCP server — read access for an agent (Claude)
+---
+title: "MCP Server"
+description: "The embedded HTTP MCP server gives an agent (Claude) read access to logs, traces, events, metrics, and journeys for debugging, analysis, and test generation."
+---
 
 The Datacat backend exposes an **MCP** (Model Context Protocol) server over **HTTP** on the
 **`/mcp`** route (*streamable HTTP* transport). It gives an agent (Claude) **read** access to the
@@ -6,7 +9,7 @@ data — logs, traces, events, metrics, journeys — to **debug, analyze real us
 hypotheses, and generate tests**.
 
 > **Embedded, nothing to install.** The MCP server is part of the ingestion binary (Rust crate
-> `rmcp`); its tools hit the [read layer](read-hot.md) **in-process** (no HTTP hop).
+> `rmcp`); its tools hit the [read layer](../read-hot/) **in-process** (no HTTP hop).
 > An agent connects to it simply via a URL — no process or package to install.
 
 ## Activation & security

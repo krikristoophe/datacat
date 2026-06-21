@@ -1,10 +1,11 @@
-# Datacat — Shared contract (event + token)
+---
+title: "Ingestion Contract"
+description: "The wire format for events — the source of truth shared by backend and SDKs."
+---
 
 This document is the **single source of truth** for the ingestion contract. The backend
 (`backend/`) and both SDKs (`sdks/typescript/`, `sdks/flutter/`) MUST conform to it exactly.
 Any change is made here first.
-
----
 
 ## 1. Ingestion endpoint
 
@@ -55,8 +56,6 @@ Error codes:
 | `429 Too Many Requests` | rate limit reached (one of the three levels) | `{ "error": "...", "scope": "session\|ip_sessions\|global" }` + `Retry-After` header |
 | `503 Service Unavailable` | shutting down / not ready | `{ "error": "..." }` |
 
----
-
 ## 2. Event format (wire format)
 
 The body is an object `{ "events": [ <event>, ... ] }` (always a batch, never a single event).
@@ -96,10 +95,10 @@ The body is an object `{ "events": [ <event>, ... ] }` (always a batch, never a 
 > **`event_id` AND `timestamp_client` are frozen at the event's *creation* and reused
 > *unchanged* on every resend (retry).** NEVER regenerate them on a retry.
 
-Technical reason (see `docs/architecture.md`): the table is partitioned by `timestamp_client`
-and the idempotency key is `(timestamp_client, event_id)`. It is the only stable timestamp
-across two sends of the same event; it guarantees that a duplicate always lands in the same
-partition and is therefore deduplicated globally.
+Technical reason (see [`architecture`](../architecture/)): the table is partitioned by
+`timestamp_client` and the idempotency key is `(timestamp_client, event_id)`. It is the only
+stable timestamp across two sends of the same event; it guarantees that a duplicate always
+lands in the same partition and is therefore deduplicated globally.
 
 ### 2.3 Bounds (default values, configurable server-side)
 
@@ -120,8 +119,6 @@ Validation policy:
   offending event is **dropped** (tolerated loss, counter incremented), the other events in
   the batch are accepted. `received` reflects the number of events retained.
 
----
-
 ## 3. Identity & correlation
 
 - `actor_id`: the persistent identity of an actor (provided by the application).
@@ -131,8 +128,6 @@ Validation policy:
 - `tenant_id`: B2B multi-tenant, optional.
 
 All three are **text**, attached to every event.
-
----
 
 ## 4. Ingestion token contract (JWT, asymmetric signature)
 
@@ -208,12 +203,10 @@ Two modes, configured in the `[token]` section of `datacat.toml`:
   refreshed periodically; selection by `kid`. Enables rotation without redeploying ingestion.
 
 > In dev/test, an environment-variable fallback exists (`TOKEN_*`) when no `datacat.toml` is
-> present. See [`configuration.md`](configuration.md).
+> present. See [configuration](../configuration/).
 
-The full issuance specification (consumer-side generation examples) is in
-`docs/token-contract.md`.
-
----
+The full issuance specification (consumer-side generation examples) is in the
+[token contract](../token/).
 
 ## 5. SDK behavior (common to TS & Flutter)
 
@@ -227,8 +220,6 @@ The full issuance specification (consumer-side generation examples) is in
 5. Token attached to every request (`Authorization: Bearer`), retrieved/renewed via `getToken`.
 6. `properties` must **never** contain sensitive data (documented; the SDK exposes an
    optional redaction hook).
-
----
 
 ## 6. Contract versioning
 

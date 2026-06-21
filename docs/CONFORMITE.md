@@ -1,39 +1,39 @@
-# Matrice de conformité — critères d'acceptation (cahier §12)
+# Conformance matrix — acceptance criteria (spec §12)
 
-Chaque critère est relié à son implémentation et à sa preuve de test.
+Each criterion is linked to its implementation and to its test proof.
 
-| # | Critère (§12) | Implémentation | Preuve |
+| # | Criterion (§12) | Implementation | Proof |
 |---|---|---|---|
-| 1 | Pic d'écriture sans perte au-delà de la tolérance et **sans doublon** ; idempotence vérifiée (même `event_id` n×→ 1) | COPY + staging UNLOGGED + merge `ON CONFLICT DO NOTHING`, clé `(timestamp_client, event_id)` (`ingest.rs`, `migrations/`) | Tests `write_spike_no_duplicates` (2000 uniques × 2 envois concurrents → 2000 lignes), `same_event_id_counts_once` ; smoke binaire (3 envois → `inserted=1, deduplicated=2`) |
-| 2 | Écriture par `COPY`, table **partitionnée**, purge par `DROP PARTITION` sans impact écriture | `copy_in_raw` CSV, `PARTITION BY RANGE (timestamp_client)`, `datacat_drop_partitions_before` | Tests `copy_persists_distinct_events`, `purge_drops_old_partition` (partition DROP, events purgés) |
-| 3 | Deux SDKs même contrat : batching, retry idempotent, `tenant`+`actor`+`session`, token jamais en dur | `sdks/typescript/`, `sdks/flutter/` conformes à `CONTRACT.md` | 26 tests vitest (TS) + 28 tests dart (Flutter), dont idempotence event_id/timestamp figés, renouvellement token |
-| 4 | Rate limiting aux **deux niveaux** : session abusive limitée sans impacter les autres sessions de l'IP ; IP ne peut créer un nombre déraisonnable de sessions | `ratelimit.rs` (token bucket par session + fenêtre glissante sessions/IP + filet global) | Tests unitaires (5) + intégration `session_rate_limit_isolates_sessions`, `ip_session_cap_blocks_fake_session_flood` |
-| 5 | Token vérifié par signature **asymétrique** (clé publique seule) ; ingestion ne peut pas forger ; contrat d'émission documenté | `token.rs` (EdDSA/RS256, PEM/JWKS, `none`/symétrique rejetés), `docs/token-contract.md` | Tests `token_is_required_and_verified`, `rs256_token_accepted`, `token_in_body_works_for_beacon` (401 si absent/invalide/expiré) |
-| 6 | Migrations présentes, schéma reconstruit de façon **reproductible** | `backend/migrations/0001_schema.sql`, `0002_functions.sql`, appliquées au démarrage (`sqlx::migrate!`) | Smoke binaire + conteneur Docker (migrations appliquées, `/readyz` ok), chaque test d'intégration repart d'une base fraîche |
-| 7 | Déploiement **documenté et simple** à reproduire | `docs/deployment.md`, `backend/Dockerfile`, `docker-compose.yml`, `.env.example` | Image Docker construite et **démarrée** (boot → `/readyz` ready → POST 202) |
-| 8 | Code **testé**, standards respectés, **pas de boilerplate** | `#![forbid(unsafe_code)]`, erreurs typées, modules cohésifs | `cargo test` (32), `cargo clippy --all-targets -- -D warnings` (0), `cargo fmt --check` ; CI multi-jobs |
-| 9 | Pas de faille évidente (revue HDS) : validation, protection endpoint public, traçabilité, TLS | Validation stricte (`model.rs`), rate limit + ban (`security.rs`), CORS, logs JSON + request-id, rustls | `docs/security.md` (modèle de menace + contrôles) ; tests `rejects_invalid_and_oversized`, `out_of_skew_event_dropped_not_rejected` |
-| 10 | Frontières ingestion / stockage / lecture **découplées** | Modules `ingest` / `db` séparés, aucune dépendance vers une couche de lecture ; aucun index de lecture en v1 | `docs/architecture.md` §7 (carte d'extension sans réécriture) |
+| 1 | Write spike without loss beyond tolerance and **without duplicates**; idempotence verified (same `event_id` n×→ 1) | COPY + UNLOGGED staging + `ON CONFLICT DO NOTHING` merge, key `(timestamp_client, event_id)` (`ingest.rs`, `migrations/`) | Tests `write_spike_no_duplicates` (2000 uniques × 2 concurrent sends → 2000 rows), `same_event_id_counts_once`; binary smoke test (3 sends → `inserted=1, deduplicated=2`) |
+| 2 | Writes via `COPY`, **partitioned** table, purge via `DROP PARTITION` without impacting writes | `copy_in_raw` CSV, `PARTITION BY RANGE (timestamp_client)`, `datacat_drop_partitions_before` | Tests `copy_persists_distinct_events`, `purge_drops_old_partition` (partition DROP, events purged) |
+| 3 | Two SDKs, same contract: batching, idempotent retry, `tenant`+`actor`+`session`, token never hard-coded | `sdks/typescript/`, `sdks/flutter/` conform to `CONTRACT.md` | 26 vitest tests (TS) + 28 dart tests (Flutter), including idempotence with frozen event_id/timestamp, token renewal |
+| 4 | Rate limiting at **both levels**: an abusive session is throttled without impacting the IP's other sessions; an IP cannot create an unreasonable number of sessions | `ratelimit.rs` (per-session token bucket + sliding window of sessions/IP + global safety net) | Unit tests (5) + integration `session_rate_limit_isolates_sessions`, `ip_session_cap_blocks_fake_session_flood` |
+| 5 | Token verified by **asymmetric** signature (public key only); ingestion cannot forge it; issuance contract documented | `token.rs` (EdDSA/RS256, PEM/JWKS, `none`/symmetric rejected), `docs/token-contract.md` | Tests `token_is_required_and_verified`, `rs256_token_accepted`, `token_in_body_works_for_beacon` (401 if missing/invalid/expired) |
+| 6 | Migrations present, schema rebuilt **reproducibly** | `backend/migrations/0001_schema.sql`, `0002_functions.sql`, applied at startup (`sqlx::migrate!`) | Binary smoke test + Docker container (migrations applied, `/readyz` ok), each integration test starts from a fresh database |
+| 7 | Deployment **documented and simple** to reproduce | `docs/deployment.md`, `backend/Dockerfile`, `docker-compose.yml`, `.env.example` | Docker image built and **started** (boot → `/readyz` ready → POST 202) |
+| 8 | Code **tested**, standards respected, **no boilerplate** | `#![forbid(unsafe_code)]`, typed errors, cohesive modules | `cargo test` (32), `cargo clippy --all-targets -- -D warnings` (0), `cargo fmt --check`; multi-job CI |
+| 9 | No obvious flaw (HDS review): validation, public endpoint protection, traceability, TLS | Strict validation (`model.rs`), rate limit + ban (`security.rs`), CORS, JSON logs + request-id, rustls | `docs/security.md` (threat model + controls); tests `rejects_invalid_and_oversized`, `out_of_skew_event_dropped_not_rejected` |
+| 10 | Ingestion / storage / read boundaries **decoupled** | Separate `ingest` / `db` modules, no dependency on a read layer; no read index in v1 | `docs/architecture.md` §7 (extension map without rewrite) |
 
-## Commandes de vérification
+## Verification commands
 
 ```bash
-# Base de données
+# Database
 docker compose up -d postgres
 export DATABASE_URL=postgres://datacat:datacat@localhost:55432/datacat
 
-# Backend : standards + tests (unitaires + intégration PostgreSQL)
+# Backend: standards + tests (unit + PostgreSQL integration)
 cd backend
 cargo fmt --check
 cargo clippy --all-targets --all-features -- -D warnings
 cargo test                      # 32 tests
 
-# SDK TypeScript
+# TypeScript SDK
 cd ../sdks/typescript && npm install && npm run typecheck && npm test && npm run build
 
-# SDK Flutter/Dart
+# Flutter/Dart SDK
 cd ../sdks/flutter && dart pub get && dart analyze && dart test   # 28 tests
 
-# Déploiement
+# Deployment
 docker build -f backend/Dockerfile -t datacat-ingest .
 ```

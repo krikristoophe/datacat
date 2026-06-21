@@ -1,34 +1,34 @@
-# Documentation Datacat
+# Datacat Documentation
 
-## Contrat & conception
-| Document | Contenu |
+## Contract & design
+| Document | Contents |
 |---|---|
-| [CONTRACT.md](CONTRACT.md) | **Source de vérité** : wire format des events + contrat du token (backend & SDKs). |
-| [architecture.md](architecture.md) | Décisions de conception (idempotence × partitionnement, chemin d'écriture, évolutivité). |
-| [security.md](security.md) | Modèle de menace, contrôles, posture d'audit HDS. |
-| [CONFORMITE.md](CONFORMITE.md) | Matrice : critères d'acceptation §12 → implémentation + preuve de test. |
+| [CONTRACT.md](CONTRACT.md) | **Source of truth**: event wire format + token contract (backend & SDKs). |
+| [architecture.md](architecture.md) | Design decisions (idempotence × partitioning, write path, scalability). |
+| [security.md](security.md) | Threat model, controls, HDS audit posture. |
+| [CONFORMITE.md](CONFORMITE.md) | Matrix: acceptance criteria §12 → implementation + test evidence. |
 
-## Intégration & déploiement
-| Document | Contenu |
+## Integration & deployment
+| Document | Contents |
 |---|---|
-| [integration.md](integration.md) | Intégration rapide dans une app existante (endpoint de token, SDK web & Flutter). |
-| [token-contract.md](token-contract.md) | Spécification d'émission du token pour les backends consommateurs. |
-| [deployment.md](deployment.md) | Déploiement simple et reproductible (Docker, env, migrations, rétention, santé). |
+| [integration.md](integration.md) | Fast integration into an existing app (token endpoint, web & Flutter SDKs). |
+| [token-contract.md](token-contract.md) | Token issuance specification for consumer backends. |
+| [deployment.md](deployment.md) | Simple, reproducible deployment (Docker, env, migrations, retention, health). |
 
-## Télémétrie (OpenTelemetry)
-| Document | Contenu |
+## Telemetry (OpenTelemetry)
+| Document | Contents |
 |---|---|
-| [otel-logs.md](otel-logs.md) | Ingestion des **logs** OTLP (HTTP + gRPC) + token de service + corrélation. |
-| [otel-metrics.md](otel-metrics.md) | Ingestion des **métriques** OTLP (gauge/sum/histogram). |
-| [alerting.md](alerting.md) | Moteur d'**alerting** (règles, cooldown) + notifications Slack & email. |
+| [otel-logs.md](otel-logs.md) | OTLP **log** ingestion (HTTP + gRPC) + service token + correlation. |
+| [otel-metrics.md](otel-metrics.md) | OTLP **metric** ingestion (gauge/sum/histogram). |
+| [alerting.md](alerting.md) | **Alerting** engine (rules, cooldown) + Slack & e-mail notifications. |
 
-## Lecture & exploitation
-| Document | Contenu |
+## Reading & operations
+| Document | Contents |
 |---|---|
-| [read-hot.md](read-hot.md) | Couche de lecture **chaude** (`/v1/query/*`, SQL lecture seule). |
-| [read-cold.md](read-cold.md) | Lecture **froide** (DataFusion sur Parquet S3). |
-| [cold-storage.md](cold-storage.md) | Export froid PostgreSQL → Parquet sur S3 (Iceberg-friendly). |
-| [mcp.md](mcp.md) | Serveur **MCP** : accès lecture pour un agent (Claude) — debug, parcours, corrélation. |
+| [read-hot.md](read-hot.md) | **Hot** read layer (`/v1/query/*`, read-only SQL). |
+| [read-cold.md](read-cold.md) | **Cold** reads (DataFusion over Parquet on S3). |
+| [cold-storage.md](cold-storage.md) | Cold export PostgreSQL → Parquet on S3 (Iceberg-friendly). |
+| [mcp.md](mcp.md) | **MCP** server: read access for an agent (Claude) — debug, exploration, correlation. |
 
-> Les **traces** OTLP (HTTP + gRPC) et la corrélation logs↔traces sont décrites dans
-> [architecture.md](architecture.md) §7 et couvertes par `read-hot.md` (`/v1/query/traces`).
+> OTLP **traces** (HTTP + gRPC) and logs↔traces correlation are described in
+> [architecture.md](architecture.md) §7 and covered by `read-hot.md` (`/v1/query/traces`).

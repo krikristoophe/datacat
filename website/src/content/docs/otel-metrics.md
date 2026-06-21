@@ -1,4 +1,7 @@
-# OpenTelemetry metrics (OTLP)
+---
+title: "OTLP Metrics"
+description: "Ingesting OpenTelemetry metrics into Datacat."
+---
 
 Datacat ingests **metrics** in the **OpenTelemetry / OTLP-HTTP (JSON)** and **OTLP/gRPC**
 formats, on the same foundation as events, logs and traces: a table partitioned by day,
@@ -21,8 +24,8 @@ produce the same `point_id` for identical content.
 
 Auth is **identical to that of logs/traces**: a service token (`[auth.logs].mode`,
 `[auth.logs].static_token`). Metrics are emitted service-to-service; see
-[`otel-logs.md` §1.1](otel-logs.md). Rate limiting is keyed on `service.name` (falling back to
-the IP).
+[OTLP logs](../otel-logs/) §1.1. Rate limiting is keyed on `service.name` (falling back to the
+IP).
 
 ## 2. Data model
 

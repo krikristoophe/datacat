@@ -1,4 +1,7 @@
-# Cold storage — PostgreSQL → Parquet export on S3
+---
+title: "Cold Storage"
+description: "Exporting PostgreSQL to Parquet on S3 for cold storage."
+---
 
 ## Overview
 
@@ -24,10 +27,10 @@ PostgreSQL (events / logs)
 The `exporter/` crate is a standalone binary (`datacat-export`) with no dependency on the
 ingestion core (`backend/`). The boundaries are clean: ingestion writes to the database, export
 reads from the database and writes to S3. The two components have no mutual dependency
-(spec §9, docs/architecture.md §7).
+(spec §9, architecture §7).
 
 The same export logic can also run **embedded** in the backend as a scheduled task via the
-`[export]` section of `datacat.toml` — see [configuration.md](configuration.md) §5. This page
+`[export]` section of `datacat.toml` — see [configuration](../configuration/) §5. This page
 describes the standalone CLI and the on-disk layout shared by both paths.
 
 ---
@@ -143,7 +146,7 @@ Daily export of day D-1 (once the day is complete):
 
 Alternative: a Kubernetes CronJob or an AWS EventBridge Scheduler → ECS Task. For an
 always-on deployment, prefer the embedded scheduled export (`[export]` in `datacat.toml`,
-see [configuration.md](configuration.md) §5), which runs the same logic on a tick.
+see [configuration](../configuration/) §5), which runs the same logic on a tick.
 
 Required environment variables (standalone CLI):
 

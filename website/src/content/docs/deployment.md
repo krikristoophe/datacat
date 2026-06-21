@@ -1,4 +1,7 @@
-# Deployment
+---
+title: "Deployment"
+description: "Deploying and operating Datacat in production."
+---
 
 Goal: a **simple and reproducible** deployment. The only v1 dependency is **PostgreSQL**.
 Migrations are **embedded in the binary** and applied automatically at startup.
@@ -7,7 +10,7 @@ Migrations are **embedded in the binary** and applied automatically at startup.
 
 - PostgreSQL **14+** (tested on 17), reachable via the database URL.
 - A reverse proxy terminating **TLS** (nginx, Caddy, Traefik, ALB…) in front of the service.
-- The token verification **public key** (PEM or JWKS) — see `token-contract.md`.
+- The token verification **public key** (PEM or JWKS) — see [token](../token/).
 
 ## 2. Configuration
 
@@ -18,18 +21,18 @@ startup in this order:
 2. `./datacat.toml` (current directory),
 3. `/etc/datacat/datacat.toml`.
 
-Copy [`datacat.example.toml`](../datacat.example.toml) and adjust it. Only `[database].url` is
-**required**; every other section is optional and falls back to safe defaults. See
-[configuration.md](configuration.md) for the full reference.
+Copy `datacat.example.toml` and adjust it. Only `[database].url` is **required**; every other
+section is optional and falls back to safe defaults. See [configuration](../configuration/) for
+the full reference.
 
 Secrets are **never** written in clear text: any string value can reference an environment
 variable with `${VAR}` (or `${VAR:-default}`), resolved at startup. A required `${VAR}` with no
 default makes the service refuse to start (fail-closed) — an HDS requirement.
 
 > **Development fallback.** If **no** `datacat.toml` is found, Datacat falls back to the legacy
-> environment-variable configuration (`BIND_ADDR`, `DATABASE_URL`, …; see
-> [`.env.example`](../.env.example)). This path is meant for development and the test suite;
-> production deployments should use the TOML file.
+> environment-variable configuration (`BIND_ADDR`, `DATABASE_URL`, …; see `.env.example`). This
+> path is meant for development and the test suite; production deployments should use the TOML
+> file.
 
 The main sections:
 
@@ -148,8 +151,8 @@ closes the pool. Allow a sufficient `terminationGracePeriod` (a few seconds).
 ## 9. Scalability (beyond v1)
 
 Adding cold storage, analytical reads, or a distributed write buffer (Citus/Redpanda) later does
-not impact the ingestion core (decoupled boundaries — cf. `architecture.md` §7). None of these
-building blocks are deployed in v1.
+not impact the ingestion core (decoupled boundaries — cf. architecture §7). None of these building
+blocks are deployed in v1.
 
 ## 10. Embedded scheduled export
 
@@ -171,4 +174,4 @@ tables = ["events", "logs"]
 ```
 
 The export is idempotent (re-running a day overwrites its object). The same logic is also
-available as a standalone CLI — see [cold-storage.md](cold-storage.md).
+available as a standalone CLI — see [cold storage](../cold-storage/).

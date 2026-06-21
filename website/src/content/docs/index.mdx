@@ -1,0 +1,44 @@
+---
+title: Datacat
+description: Self-hosted, idempotent analytics & observability ingestion on PostgreSQL.
+template: splash
+hero:
+  tagline: Self-hosted analytics & observability ingestion — events, logs, traces and metrics, on PostgreSQL alone.
+  actions:
+    - text: Get started
+      link: /datacat/overview/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/krikristoophe/datacat
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+  <Card title="Ingestion-first" icon="rocket">
+    A robust write path built for throughput: COPY into UNLOGGED staging, micro-batching,
+    and time-partitioned tables. Tolerant to losing a tiny fraction of events — never to duplicates.
+  </Card>
+  <Card title="PostgreSQL only" icon="setting">
+    One database as the central store. No Kafka, ClickHouse or Zookeeper. Clean boundaries between
+    ingestion, storage and reads keep it light now and scalable later.
+  </Card>
+  <Card title="Strictly idempotent" icon="approve-check">
+    A given `event_id` (or log/span/metric identity) counts exactly once, even across retries —
+    enforced at the storage layer with `ON CONFLICT DO NOTHING`.
+  </Card>
+  <Card title="OpenTelemetry native" icon="puzzle">
+    Ingest OTLP logs, traces and metrics over HTTP and gRPC, correlated with product events. A
+    read layer (hot PostgreSQL / cold Parquet), modular alerting, and an embedded MCP server.
+  </Card>
+  <Card title="Auditable & secure" icon="document">
+    Strict input validation, a public endpoint defended server-side, asymmetric token verification
+    (public key only), TLS, and TOML configuration with secrets kept in the environment.
+  </Card>
+  <Card title="Configurable alerting" icon="bell">
+    Per-project rules: error rates, latency percentiles, heartbeats, spikes, composite conditions,
+    new-error detection and statistical anomalies — routed to Slack, e-mail or webhooks.
+  </Card>
+</CardGrid>

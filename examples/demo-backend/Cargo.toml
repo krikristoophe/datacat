@@ -1,0 +1,38 @@
+[workspace]
+
+[package]
+name = "demo-backend"
+version = "0.1.0"
+edition = "2021"
+description = "Datacat integration example — demo consumer backend (Axum)"
+
+[[bin]]
+name = "demo-backend"
+path = "src/main.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros", "json", "tokio", "http1"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal"] }
+tower-http = { version = "0.6", features = ["cors"] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# JWT signing (EdDSA / Ed25519)
+jsonwebtoken = "9"
+
+# HTTP client for emitting OTLP logs to Datacat
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

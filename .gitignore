@@ -15,6 +15,7 @@ keys/
 # Node / TS SDK
 node_modules/
 sdks/typescript/dist/
+examples/web-app/dist/
 *.tsbuildinfo
 .npm/
 

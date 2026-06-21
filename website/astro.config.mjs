@@ -44,6 +44,17 @@ export default defineConfig({
       // the French label so the built-in language picker shows localized groups.
       sidebar: [
         {
+          label: 'Guides',
+          translations: { fr: 'Guides' },
+          items: [
+            { slug: 'quickstart' },
+            { slug: 'installation' },
+            { slug: 'sdks' },
+            { slug: 'docker-telemetry' },
+            { slug: 'companion' },
+          ],
+        },
+        {
           label: 'Getting Started',
           translations: { fr: 'Premiers pas' },
           items: [

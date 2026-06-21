@@ -1,0 +1,62 @@
+[package]
+name = "datacat-ingest"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Datacat — API d'ingestion d'events (Axum + PostgreSQL)"
+
+[lib]
+name = "datacat_ingest"
+path = "src/lib.rs"
+
+[[bin]]
+name = "datacat-ingest"
+path = "src/main.rs"
+
+# Outil de DEV uniquement : génère un token d'ingestion signé à partir d'une clé
+# privée locale. N'est jamais déployé en production (l'émission est hors scope).
+[[bin]]
+name = "mint-dev-token"
+path = "src/bin/mint_dev_token.rs"
+
+[dependencies]
+axum = { version = "0.8", features = ["macros", "json", "tokio", "http1"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "time", "sync", "net"] }
+tower = { version = "0.5", features = ["timeout", "limit"] }
+tower-http = { version = "0.6", features = ["cors", "trace", "limit", "timeout", "request-id", "util", "catch-panic"] }
+
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls", "postgres", "uuid", "chrono", "json", "migrate", "macros",
+] }
+
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock", "std"] }
+
+# Vérification du token d'ingestion (signature asymétrique : EdDSA / RS256).
+jsonwebtoken = "9"
+
+# État du rate limiting (cartes concurrentes).
+dashmap = "6"
+
+thiserror = "2"
+anyhow = "1"
+
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "env-filter", "ansi"] }
+
+# JWKS (récupération des clés publiques) — TLS rustls, surface minimale.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+serde_json = "1"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

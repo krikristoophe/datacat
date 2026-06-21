@@ -1,0 +1,31 @@
+# Rust
+/target
+**/target
+*.pdb
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+*.pem
+# Clés de TEST jetables (paires générées, pas des secrets) — versionnées pour les tests.
+!backend/tests/fixtures/*.pem
+keys/
+
+# Node / TS SDK
+node_modules/
+sdk-typescript/dist/
+*.tsbuildinfo
+.npm/
+
+# Dart / Flutter SDK
+sdk-flutter/.dart_tool/
+sdk-flutter/.packages
+sdk-flutter/build/
+sdk-flutter/pubspec.lock
+
+# OS / editor
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -1,0 +1,12 @@
+target
+**/target
+node_modules
+sdk-typescript/dist
+sdk-flutter/.dart_tool
+sdk-flutter/build
+.git
+*.md
+!backend/migrations/**
+.env
+.env.*
+keys

@@ -1,0 +1,31 @@
+# Dev / test stack. Production deployment is documented in docs/deployment.md.
+# PostgreSQL is the only required dependency of the v1 ingestion service.
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: datacat-pg
+    environment:
+      POSTGRES_USER: datacat
+      POSTGRES_PASSWORD: datacat
+      POSTGRES_DB: datacat
+    ports:
+      - "55432:5432"
+    command:
+      # Tuned for write throughput; safe-ish defaults for a dev box.
+      - "postgres"
+      - "-c"
+      - "synchronous_commit=off"      # group-commit friendly; loss tolerance per spec §2
+      - "-c"
+      - "wal_compression=on"
+      - "-c"
+      - "max_connections=200"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U datacat"]
+      interval: 2s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - datacat_pgdata:/var/lib/postgresql/data
+
+volumes:
+  datacat_pgdata:

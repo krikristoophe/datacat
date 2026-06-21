@@ -1,0 +1,16 @@
+name: datacat_sdk
+description: Datacat analytics SDK for Flutter/Dart. Pure-Dart core, Flutter integration optional.
+version: 0.1.0
+homepage: https://github.com/datacat/sdk-flutter
+
+environment:
+  sdk: '>=3.4.0 <4.0.0'
+
+dependencies:
+  http: ^1.2.0
+  uuid: ^4.4.0
+  meta: ^1.12.0
+
+dev_dependencies:
+  test: ^1.25.0
+  lints: ^4.0.0

@@ -14,7 +14,7 @@ use sqlx::PgPool;
 use tokio::time::{interval, MissedTickBehavior};
 
 use crate::alerting::notify::{Alert, AlertState, Dispatcher, Notifier};
-use crate::alerting::rules::{Agg, GroupExpr, Rule, RuleKind, Source};
+use crate::alerting::rules::{Agg, BoolOp, GroupExpr, Rule, RuleKind, Source};
 
 /// État runtime d'une règle (machine à états + horodatage de la dernière notification).
 #[derive(Debug, Default, Clone)]
@@ -43,11 +43,48 @@ pub async fn evaluate_once(
     for rule in rules {
         let notifiers = dispatcher.for_rule(rule);
         notified += match rule.kind {
-            RuleKind::LogGroupCount => evaluate_group_rule(pool, rule, state, notifiers, now).await,
+            RuleKind::LogGroupCount | RuleKind::LogNewSignature => {
+                evaluate_group_rule(pool, rule, state, notifiers, now).await
+            }
+            RuleKind::Composite => evaluate_composite_rule(pool, rule, state, notifiers, now).await,
             _ => evaluate_scalar_rule(pool, rule, state, notifiers, now).await,
         };
     }
     notified
+}
+
+/// Règle `composite` : combine les sous-conditions (`conditions`) par `op` (all=ET, any=OU).
+/// La valeur reportée est le nombre de sous-conditions franchies.
+async fn evaluate_composite_rule(
+    pool: &PgPool,
+    rule: &Rule,
+    state: &mut AlertEngineState,
+    notifiers: &[Arc<dyn Notifier>],
+    now: DateTime<Utc>,
+) -> usize {
+    let mut met = 0usize;
+    for cond in &rule.conditions {
+        let value = match compute_value(pool, cond, now).await {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!(rule = %rule.name, error = %e, "sous-condition composite échouée");
+                return 0;
+            }
+        };
+        if cond.comparator.compare(value, cond.threshold) {
+            met += 1;
+        }
+    }
+    let breaching = match rule.op.unwrap_or(BoolOp::All) {
+        BoolOp::All => met == rule.conditions.len(),
+        BoolOp::Any => met >= 1,
+    };
+    usize::from(
+        process_transition(
+            state, &rule.name, breaching, rule, met as f64, None, notifiers, now,
+        )
+        .await,
+    )
 }
 
 /// Règle scalaire (`log_count` / `metric_threshold`) : une valeur, un état.
@@ -84,7 +121,11 @@ async fn evaluate_group_rule(
     notifiers: &[Arc<dyn Notifier>],
     now: DateTime<Utc>,
 ) -> usize {
-    let groups = match compute_groups(pool, rule, now).await {
+    let computed = match rule.kind {
+        RuleKind::LogNewSignature => compute_novel_groups(pool, rule, now).await,
+        _ => compute_groups(pool, rule, now).await,
+    };
+    let groups = match computed {
         Ok(g) => g,
         Err(e) => {
             tracing::warn!(rule = %rule.name, error = %e, "évaluation (groupes) de la règle échouée");
@@ -276,6 +317,41 @@ fn describe(rule: &Rule) -> String {
             rule.threshold,
             rule.window_secs
         ),
+        RuleKind::Composite => {
+            let op = match rule.op.unwrap_or(BoolOp::All) {
+                BoolOp::All => "ALL",
+                BoolOp::Any => "ANY",
+            };
+            let parts: Vec<String> = rule.conditions.iter().map(describe).collect();
+            let sep = match rule.op.unwrap_or(BoolOp::All) {
+                BoolOp::All => " AND ",
+                BoolOp::Any => " OR ",
+            };
+            format!("{op} of [{}]", parts.join(sep))
+        }
+        RuleKind::LogNewSignature => {
+            let by = rule.group_by.as_deref().unwrap_or("body");
+            let baseline = rule.baseline_secs.unwrap_or(86_400);
+            format!(
+                "new signature({} by {by}, baseline {baseline}s) {} {} over {}s",
+                source_desc(rule),
+                rule.comparator.symbol(),
+                rule.threshold,
+                rule.window_secs
+            )
+        }
+        RuleKind::Anomaly => {
+            let baseline = rule
+                .baseline_secs
+                .unwrap_or(rule.window_secs.saturating_mul(30));
+            format!(
+                "anomaly(count {}) z {} {} over {}s baseline {baseline}s",
+                source_desc(rule),
+                rule.comparator.symbol(),
+                rule.threshold,
+                rule.window_secs
+            )
+        }
     }
 }
 
@@ -313,13 +389,16 @@ fn source_desc(rule: &Rule) -> String {
 async fn compute_value(pool: &PgPool, rule: &Rule, now: DateTime<Utc>) -> anyhow::Result<f64> {
     let from = now - chrono::Duration::seconds(rule.window_secs as i64);
     match rule.kind {
-        // Routé vers `compute_groups` ; jamais atteint ici.
-        RuleKind::LogGroupCount => anyhow::bail!("log_group_count n'est pas une règle scalaire"),
+        // Routés ailleurs (groupes / composite) ; jamais atteints ici.
+        RuleKind::LogGroupCount | RuleKind::LogNewSignature | RuleKind::Composite => {
+            anyhow::bail!("{:?} n'est pas une règle scalaire", rule.kind)
+        }
         RuleKind::LogCount | RuleKind::TelemetryCount => compute_count(pool, rule, from, now).await,
         RuleKind::MetricThreshold => compute_metric(pool, rule, from, now).await,
         RuleKind::ErrorRatio => compute_error_ratio(pool, rule, from, now).await,
         RuleKind::SpanDuration => compute_span_duration(pool, rule, from, now).await,
         RuleKind::RelativeChange => compute_relative_change(pool, rule, from, now).await,
+        RuleKind::Anomaly => compute_anomaly(pool, rule, now).await,
     }
 }
 
@@ -569,6 +648,81 @@ async fn compute_relative_change(
     Ok(current as f64 / base)
 }
 
+/// `anomaly` : z-score du volume de la fenêtre courante vs une baseline glissante. Le volume est
+/// échantillonné en buckets de `window_secs` sur `[now - baseline, now - window]` ; on en tire la
+/// moyenne μ et l'écart-type σ, puis `z = (courant - μ) / σ`. 0.0 si historique/variance
+/// insuffisants (pas de faux positif).
+async fn compute_anomaly(pool: &PgPool, rule: &Rule, now: DateTime<Utc>) -> anyhow::Result<f64> {
+    let win = rule.window_secs as i64;
+    let baseline = rule
+        .baseline_secs
+        .unwrap_or_else(|| rule.window_secs.saturating_mul(30)) as i64;
+    let start = now - chrono::Duration::seconds(baseline);
+    let hist_end = now - chrono::Duration::seconds(win); // fin de l'historique = début de la fenêtre courante
+
+    let buckets = bucket_counts(pool, rule, start, hist_end).await?;
+    if buckets.len() < 3 {
+        return Ok(0.0); // pas assez d'historique pour juger
+    }
+    let n = buckets.len() as f64;
+    let mean = buckets.iter().sum::<i64>() as f64 / n;
+    if mean < rule.min_count as f64 {
+        return Ok(0.0); // baseline trop faible (bruit)
+    }
+    let var = buckets
+        .iter()
+        .map(|&c| {
+            let d = c as f64 - mean;
+            d * d
+        })
+        .sum::<f64>()
+        / n;
+    let sd = var.sqrt();
+    if sd < 1e-9 {
+        return Ok(0.0); // aucune variance → indécidable
+    }
+    let current = compute_count(pool, rule, hist_end, now).await?;
+    Ok((current - mean) / sd)
+}
+
+/// Compte de lignes par bucket de `window_secs` sur `[start, end)`, **zéros inclus** (via
+/// `generate_series` + LEFT JOIN) pour des statistiques non biaisées.
+async fn bucket_counts(
+    pool: &PgPool,
+    rule: &Rule,
+    start: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> anyhow::Result<Vec<i64>> {
+    let win = rule.window_secs as i32;
+    let tc = time_col(rule.source);
+    // count(t.<time_col>) : NULL (donc non compté) pour les buckets vides du LEFT JOIN, et non
+    // nul pour chaque ligne réelle — comptage correct des zéros.
+    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(format!(
+        "SELECT count(t.{tc}) AS c FROM generate_series("
+    ));
+    qb.push_bind(start)
+        .push(", ")
+        .push_bind(end)
+        .push(" - make_interval(secs => ")
+        .push_bind(win)
+        .push("), make_interval(secs => ")
+        .push_bind(win)
+        .push(")) AS b LEFT JOIN ")
+        .push(table_of(rule.source))
+        .push(" t ON t.")
+        .push(tc)
+        .push(" >= b AND t.")
+        .push(tc)
+        .push(" < b + make_interval(secs => ")
+        .push_bind(win)
+        .push(")");
+    push_count_filter(&mut qb, rule);
+    qb.push(" GROUP BY b ORDER BY b");
+
+    let rows: Vec<(i64,)> = qb.build_query_as().fetch_all(pool).await?;
+    Ok(rows.into_iter().map(|(c,)| c).collect())
+}
+
 /// Calcule le compte de logs **par groupe** (`group_by`) sur la fenêtre `[now - window, now]`.
 /// Retourne `(clé de groupe, compte)`. Les groupes à clé NULL sont ignorés.
 async fn compute_groups(
@@ -587,12 +741,7 @@ async fn compute_groups(
         .push_bind(from)
         .push(" AND log_time <= ")
         .push_bind(now);
-    if let Some(s) = &rule.service {
-        qb.push(" AND service_name = ").push_bind(s.clone());
-    }
-    if let Some(sv) = rule.severity_min {
-        qb.push(" AND severity_number >= ").push_bind(sv);
-    }
+    push_log_group_filters(&mut qb, rule);
     qb.push(" GROUP BY ");
     push_group_expr(&mut qb, &group);
 
@@ -601,6 +750,59 @@ async fn compute_groups(
         .into_iter()
         .filter_map(|(gk, count)| gk.map(|gk| (gk, count as f64)))
         .collect())
+}
+
+/// Signatures **nouvelles** (`log_new_signature`) : présentes dans la fenêtre courante
+/// `[now - window, now]` mais absentes de la fenêtre baseline `[now - baseline, now - window)`.
+/// Retourne `(signature, compte récent)`. Défaut `baseline_secs` = 24 h.
+async fn compute_novel_groups(
+    pool: &PgPool,
+    rule: &Rule,
+    now: DateTime<Utc>,
+) -> anyhow::Result<Vec<(String, f64)>> {
+    let from = now - chrono::Duration::seconds(rule.window_secs as i64);
+    let baseline = rule.baseline_secs.unwrap_or(86_400) as i64;
+    let baseline_from = now - chrono::Duration::seconds(baseline);
+    let group = rule.group_expr()?;
+
+    // SELECT <sig> AS gk, count(*) FROM logs WHERE <fenêtre récente> [filtres]
+    // GROUP BY <sig>
+    // HAVING <sig> NOT IN (SELECT <sig> FROM logs WHERE <fenêtre baseline> [filtres])
+    let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new("SELECT ");
+    push_group_expr(&mut qb, &group);
+    qb.push(" AS gk, count(*) FROM logs WHERE log_time >= ")
+        .push_bind(from)
+        .push(" AND log_time <= ")
+        .push_bind(now);
+    push_log_group_filters(&mut qb, rule);
+    qb.push(" GROUP BY ");
+    push_group_expr(&mut qb, &group);
+    qb.push(" HAVING ");
+    push_group_expr(&mut qb, &group);
+    qb.push(" NOT IN (SELECT ");
+    push_group_expr(&mut qb, &group);
+    qb.push(" FROM logs WHERE log_time >= ")
+        .push_bind(baseline_from)
+        .push(" AND log_time < ")
+        .push_bind(from);
+    push_log_group_filters(&mut qb, rule);
+    qb.push(")");
+
+    let rows: Vec<(Option<String>, i64)> = qb.build_query_as().fetch_all(pool).await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(gk, count)| gk.map(|gk| (gk, count as f64)))
+        .collect())
+}
+
+/// Filtres `service` / `severity_min` communs aux requêtes groupées sur `logs`.
+fn push_log_group_filters(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule) {
+    if let Some(s) = &rule.service {
+        qb.push(" AND service_name = ").push_bind(s.clone());
+    }
+    if let Some(sv) = rule.severity_min {
+        qb.push(" AND severity_number >= ").push_bind(sv);
+    }
 }
 
 /// Pousse l'expression de regroupement dans le `QueryBuilder` (colonne sûre ou attribut bindé).
@@ -785,5 +987,69 @@ mod tests {
             agg_sql_expr(Agg::P95, "v"),
             "percentile_cont(0.95) WITHIN GROUP (ORDER BY v)"
         );
+    }
+
+    #[test]
+    fn describe_advanced_kinds() {
+        // composite ANY (OU)
+        let cond_a = Rule {
+            kind: RuleKind::ErrorRatio,
+            source: Source::Spans,
+            service: Some("api".into()),
+            window_secs: 300,
+            comparator: Comparator::Gt,
+            threshold: 0.05,
+            ..Default::default()
+        };
+        let cond_b = Rule {
+            kind: RuleKind::SpanDuration,
+            agg: Some(Agg::P95),
+            service: Some("api".into()),
+            window_secs: 300,
+            comparator: Comparator::Gt,
+            threshold: 2000.0,
+            ..Default::default()
+        };
+        let comp = Rule {
+            name: "incident".into(),
+            kind: RuleKind::Composite,
+            op: Some(BoolOp::Any),
+            conditions: vec![cond_a, cond_b],
+            ..Default::default()
+        };
+        let d = describe(&comp);
+        assert!(d.starts_with("ANY of ["), "{d}");
+        assert!(d.contains(" OR "), "{d}");
+        assert!(d.contains("error_ratio(spans service=api)"), "{d}");
+
+        // log_new_signature
+        let novel = Rule {
+            name: "new".into(),
+            kind: RuleKind::LogNewSignature,
+            severity_min: Some(17),
+            baseline_secs: Some(86_400),
+            group_by: Some("body".into()),
+            window_secs: 300,
+            comparator: Comparator::Gte,
+            threshold: 1.0,
+            ..Default::default()
+        };
+        assert!(describe(&novel)
+            .contains("new signature(logs severity>=17 by body, baseline 86400s) >= 1 over 300s"));
+
+        // anomaly
+        let anomaly = Rule {
+            name: "spike".into(),
+            kind: RuleKind::Anomaly,
+            source: Source::Logs,
+            severity_min: Some(17),
+            baseline_secs: Some(18_000),
+            window_secs: 300,
+            comparator: Comparator::Gt,
+            threshold: 3.0,
+            ..Default::default()
+        };
+        assert!(describe(&anomaly)
+            .contains("anomaly(count logs severity>=17) z > 3 over 300s baseline 18000s"));
     }
 }

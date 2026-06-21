@@ -9,6 +9,9 @@
 //! - `error_ratio` : taux d'erreur sur `logs` (sévérité) ou `spans` (status=error).
 //! - `span_duration` : agrégat de la latence des spans (`duration_ms`) — p95/p99 SLO.
 //! - `relative_change` : variation relative du volume vs la fenêtre précédente (détection de pic).
+//! - `composite` : combine plusieurs sous-conditions par `op` (`all` = ET, `any` = OU).
+//! - `log_new_signature` : signature de log **jamais vue** sur une fenêtre `baseline` (first-seen).
+//! - `anomaly` : z-score du volume courant vs une baseline glissante (anomalie statistique).
 //!
 //! Chaque règle compare la valeur calculée à un `threshold` via un `comparator` (gt/gte/lt/lte),
 //! avec un `cooldown_secs` qui borne la fréquence des notifications.
@@ -42,6 +45,26 @@ pub enum RuleKind {
     /// Ratio volume(fenêtre courante) / volume(fenêtre précédente) sur une `source`. `gt 2` =
     /// « doublé », `lt 0.5` = « divisé par deux ». Garde-fou `min_count` sur la base.
     RelativeChange,
+    /// Combine plusieurs sous-conditions (`conditions`) par `op` (`all` = ET, `any` = OU). Chaque
+    /// sous-condition est une règle scalaire (avec son propre kind/fenêtre/seuil).
+    Composite,
+    /// Signature de log (`group_by`) présente sur la fenêtre courante mais **absente** de la
+    /// fenêtre `baseline_secs` qui précède → première apparition (nouvelle erreur).
+    LogNewSignature,
+    /// Anomalie statistique : z-score = (volume courant − moyenne) / écart-type, calculé sur des
+    /// buckets de `window_secs` couvrant `baseline_secs`. `gt 3` = pic à +3σ.
+    Anomaly,
+}
+
+/// Opérateur de combinaison des sous-conditions d'un `composite`.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum BoolOp {
+    /// ET logique : toutes les sous-conditions doivent être franchies.
+    #[default]
+    All,
+    /// OU logique : au moins une sous-condition franchie.
+    Any,
 }
 
 /// Source de données interrogée par les règles génériques (`telemetry_count`, `error_ratio`,
@@ -169,7 +192,9 @@ fn default_severity() -> String {
 /// `name`, `kind`, `window_secs`, `comparator`, `threshold`.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct Rule {
-    /// Nom lisible (apparaît dans la notification et identifie l'état de la règle).
+    /// Nom lisible (apparaît dans la notification et identifie l'état de la règle). Requis pour
+    /// une règle de premier niveau ; omis pour une sous-condition de `composite`.
+    #[serde(default)]
     pub name: String,
     pub kind: RuleKind,
     /// Source interrogée par `telemetry_count` / `error_ratio` / `relative_change`. Défaut `logs`.
@@ -203,14 +228,24 @@ pub struct Rule {
     #[serde(default)]
     pub error_only: bool,
 
-    /// Échantillon minimal pour `error_ratio` / `relative_change` : sous ce total, pas de
-    /// déclenchement (évite le bruit sur de très petits volumes). Défaut 0.
+    /// Échantillon minimal pour `error_ratio` / `relative_change` / `anomaly` : sous ce total
+    /// (resp. cette moyenne de base), pas de déclenchement. Évite le bruit sur de petits volumes.
     #[serde(default)]
     pub min_count: u64,
 
-    /// Fenêtre glissante (secondes) sur laquelle la valeur est calculée.
+    /// Fenêtre de référence (secondes) : lookback « connu » pour `log_new_signature`, durée totale
+    /// des buckets pour `anomaly`. Défaut : 24 h (new_signature), 30×`window_secs` (anomaly).
+    #[serde(default)]
+    pub baseline_secs: Option<u64>,
+
+    /// Fenêtre glissante (secondes). Requis sauf pour `composite` (chaque sous-condition a la sienne).
+    #[serde(default)]
     pub window_secs: u64,
+    /// Comparateur valeur ↔ seuil. Défaut `gt`. Inutilisé par `composite` (cf. `op`).
+    #[serde(default)]
     pub comparator: Comparator,
+    /// Seuil numérique. Défaut 0. Inutilisé par `composite`.
+    #[serde(default)]
     pub threshold: f64,
     /// Durée minimale entre deux notifications pour cette règle.
     #[serde(default)]
@@ -219,10 +254,17 @@ pub struct Rule {
     #[serde(default = "default_severity")]
     pub severity: String,
 
-    /// Pour `log_group_count` : clé de regroupement. Colonne (`body`, `service_name`,
-    /// `severity_text`, `trace_id`) ou `attr:<clé>` (attribut de log). Défaut `body`.
+    /// Pour `log_group_count` / `log_new_signature` : clé de regroupement. Colonne (`body`,
+    /// `service_name`, `severity_text`, `trace_id`) ou `attr:<clé>` (attribut). Défaut `body`.
     #[serde(default)]
     pub group_by: Option<String>,
+
+    /// Pour `composite` : opérateur de combinaison (`all` = ET, défaut ; `any` = OU).
+    #[serde(default)]
+    pub op: Option<BoolOp>,
+    /// Pour `composite` : sous-conditions (règles scalaires ; `name`/`actions`/`cooldown` ignorés).
+    #[serde(default)]
+    pub conditions: Vec<Rule>,
 
     /// Actions déclenchées (slack/email/webhook). Vide ⇒ notifiers globaux par défaut.
     #[serde(default)]
@@ -239,41 +281,66 @@ pub enum GroupExpr {
 }
 
 impl Rule {
-    /// Valide la cohérence de la règle selon son `kind`.
+    /// Valide une règle de premier niveau (exige un `name`).
     pub fn validate(&self) -> Result<()> {
         if self.name.trim().is_empty() {
             anyhow::bail!("règle sans nom");
         }
-        if self.window_secs == 0 {
-            anyhow::bail!("règle '{}': window_secs doit être > 0", self.name);
-        }
+        self.validate_inner(false)
+    }
+
+    /// Cœur de validation. `as_condition` = sous-condition d'un `composite` (pas de `name`/actions,
+    /// kinds non scalaires interdits).
+    fn validate_inner(&self, as_condition: bool) -> Result<()> {
         match self.kind {
-            RuleKind::MetricThreshold => {
-                if self.metric_name.as_deref().unwrap_or("").is_empty() {
-                    bail!("règle '{}': metric_threshold exige metric_name", self.name);
+            RuleKind::Composite => {
+                if as_condition {
+                    bail!("règle '{}': composite imbriqué interdit", self.name);
                 }
-                if self.agg.is_none() {
-                    bail!(
-                        "règle '{}': metric_threshold exige agg (avg|max|min|sum|count|last|p50..p99)",
-                        self.name
-                    );
+                if self.conditions.is_empty() {
+                    bail!("règle '{}': composite sans conditions", self.name);
                 }
-            }
-            RuleKind::LogGroupCount => {
-                self.group_expr()?;
-            }
-            RuleKind::ErrorRatio => {
-                if !matches!(self.source, Source::Logs | Source::Spans) {
-                    bail!(
-                        "règle '{}': error_ratio exige source=logs ou source=spans",
-                        self.name
-                    );
+                for c in &self.conditions {
+                    c.validate_inner(true)?;
                 }
             }
-            RuleKind::LogCount
-            | RuleKind::TelemetryCount
-            | RuleKind::SpanDuration
-            | RuleKind::RelativeChange => {}
+            _ => {
+                if self.window_secs == 0 {
+                    bail!("règle '{}': window_secs doit être > 0", self.name);
+                }
+                match self.kind {
+                    RuleKind::MetricThreshold => {
+                        if self.metric_name.as_deref().unwrap_or("").is_empty() {
+                            bail!("règle '{}': metric_threshold exige metric_name", self.name);
+                        }
+                        if self.agg.is_none() {
+                            bail!(
+                                "règle '{}': metric_threshold exige agg (avg|max|min|sum|count|last|p50..p99)",
+                                self.name
+                            );
+                        }
+                    }
+                    RuleKind::ErrorRatio => {
+                        if !matches!(self.source, Source::Logs | Source::Spans) {
+                            bail!(
+                                "règle '{}': error_ratio exige source=logs ou source=spans",
+                                self.name
+                            );
+                        }
+                    }
+                    RuleKind::LogGroupCount | RuleKind::LogNewSignature => {
+                        if as_condition {
+                            bail!(
+                                "règle '{}': {:?} ne peut pas être une sous-condition (non scalaire)",
+                                self.name,
+                                self.kind
+                            );
+                        }
+                        self.group_expr()?;
+                    }
+                    _ => {}
+                }
+            }
         }
         for action in &self.actions {
             if let Action::Webhook { url, .. } = action {
@@ -462,6 +529,63 @@ mod tests {
         ] }"#;
         let rules = parse_rules(raw).unwrap();
         assert_eq!(rules[0].source, Source::Logs);
+    }
+
+    #[test]
+    fn parses_composite_and_advanced_kinds() {
+        let raw = r#"{ "rules": [
+            { "name":"incident", "kind":"composite", "op":"all", "conditions":[
+                { "kind":"error_ratio", "source":"spans", "service":"api", "min_count":50,
+                  "window_secs":300, "comparator":"gt", "threshold":0.05 },
+                { "kind":"span_duration", "agg":"p95", "service":"api",
+                  "window_secs":300, "comparator":"gt", "threshold":2000 }
+            ] },
+            { "name":"nouvelle erreur", "kind":"log_new_signature", "group_by":"body",
+              "severity_min":17, "baseline_secs":86400, "window_secs":300,
+              "comparator":"gte", "threshold":1 },
+            { "name":"anomalie volume", "kind":"anomaly", "source":"logs", "severity_min":17,
+              "baseline_secs":18000, "window_secs":300, "comparator":"gt", "threshold":3 }
+        ] }"#;
+        let rules = parse_rules(raw).unwrap();
+        assert_eq!(rules.len(), 3);
+        assert_eq!(rules[0].kind, RuleKind::Composite);
+        assert_eq!(rules[0].op, Some(BoolOp::All));
+        assert_eq!(rules[0].conditions.len(), 2);
+        assert_eq!(rules[1].kind, RuleKind::LogNewSignature);
+        assert_eq!(rules[1].baseline_secs, Some(86_400));
+        assert_eq!(rules[2].kind, RuleKind::Anomaly);
+    }
+
+    #[test]
+    fn rejects_nested_composite() {
+        let raw = r#"{ "rules": [
+            { "name":"x", "kind":"composite", "op":"any", "conditions":[
+                { "kind":"composite", "conditions":[] }
+            ] }
+        ] }"#;
+        assert!(parse_rules(raw).is_err());
+    }
+
+    #[test]
+    fn rejects_grouped_kind_as_condition() {
+        let raw = r#"{ "rules": [
+            { "name":"x", "kind":"composite", "conditions":[
+                { "kind":"log_group_count", "group_by":"body",
+                  "window_secs":60, "comparator":"gte", "threshold":5 }
+            ] }
+        ] }"#;
+        assert!(
+            parse_rules(raw).is_err(),
+            "un kind groupé ne peut pas être une sous-condition"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_composite() {
+        let raw = r#"{ "rules": [
+            { "name":"x", "kind":"composite", "conditions":[] }
+        ] }"#;
+        assert!(parse_rules(raw).is_err());
     }
 
     #[test]

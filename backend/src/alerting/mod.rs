@@ -15,5 +15,5 @@ pub use notify::{
     RecordingNotifier, SlackNotifier, WebhookNotifier,
 };
 pub use rules::{
-    load_rules, parse_rules, Action, Agg, Comparator, GroupExpr, Rule, RuleKind, Source,
+    load_rules, parse_rules, Action, Agg, BoolOp, Comparator, GroupExpr, Rule, RuleKind, Source,
 };

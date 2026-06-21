@@ -36,8 +36,11 @@ Fichier JSON `{ "rules": [ … ] }`. Chaque règle :
 | `event_name` | — | filtre `event_name` (source `events`) |
 | `operation` | — | filtre le nom de l'opération du span (spans) |
 | `error_only` | — | restreint aux erreurs (spans : status=error ; logs : sévérité ≥ `severity_min`/17) |
-| `min_count` | — | échantillon minimal (`error_ratio` / `relative_change`) sous lequel on ne déclenche pas |
-| `group_by` | (log_group_count) | clé de regroupement (défaut `body`) — voir ci-dessous |
+| `min_count` | — | échantillon/baseline minimal (`error_ratio` / `relative_change` / `anomaly`) sous lequel on ne déclenche pas |
+| `baseline_secs` | (log_new_signature / anomaly) | fenêtre de référence : lookback « connu » (défaut 24 h) / durée des buckets (défaut 30×`window_secs`) |
+| `group_by` | (log_group_count / log_new_signature) | clé de regroupement (défaut `body`) — voir ci-dessous |
+| `op` | (composite) | `all` (ET, défaut) \| `any` (OU) |
+| `conditions` | (composite) | liste de sous-conditions (règles scalaires, sans `name`) |
 | `actions` | — | actions à déclencher (slack/email/webhook). Vide ⇒ canaux globaux par défaut |
 
 ### Kinds (cas d'usage standard)
@@ -51,6 +54,9 @@ Fichier JSON `{ "rules": [ … ] }`. Chaque règle :
 | `error_ratio` | fraction d'erreurs sur `logs` ou `spans` (garde-fou `min_count`) | « **taux d'erreur** > 5 % sur ≥ 50 requêtes » |
 | `span_duration` | agrégat de la latence des spans (`duration_ms`, ms) | « **p99** de l'opération `checkout` > 2 s » |
 | `relative_change` | ratio volume(fenêtre courante)/volume(fenêtre précédente) | « erreurs **× 3** vs la période précédente » |
+| `composite` | combine des sous-conditions par `op` (`all`=ET, `any`=OU) | « taux d'erreur élevé **ET** latence p95 dégradée » |
+| `log_new_signature` | signature de log absente de la fenêtre `baseline` | « **nouvelle erreur** jamais vue en 24 h » |
+| `anomaly` | z-score du volume vs baseline glissante (μ ± σ) | « volume **anormal** (+3σ) vs l'historique » |
 
 Détails utiles :
 
@@ -68,6 +74,19 @@ Détails utiles :
   `max(min_count, 1)` pour éviter les faux pics quand il n'y a pas d'historique.
 - **percentiles** (`p50`/`p90`/`p95`/`p99`) — disponibles pour `metric_threshold` **et**
   `span_duration` (via `percentile_cont`).
+- **`composite`** — chaque sous-condition est une règle scalaire (`error_ratio`, `span_duration`,
+  `telemetry_count`, `metric_threshold`, `relative_change`, `anomaly`, `log_count`) avec sa propre
+  fenêtre/seuil. `op=all` (ET) déclenche quand **toutes** sont franchies, `op=any` (OU) dès qu'**une**
+  l'est. Les kinds groupés (`log_group_count`, `log_new_signature`) et les composites imbriqués sont
+  interdits comme sous-condition. La valeur de l'alerte = nombre de sous-conditions franchies.
+- **`log_new_signature`** — détecte la **première apparition** d'une signature (`group_by`) :
+  présente sur la fenêtre courante mais **absente** de `[now-baseline_secs, now-window]`. Un état par
+  signature (comme `log_group_count`) ; `threshold`/`comparator` fixent un minimum d'occurrences
+  récentes (typiquement `gte 1`). Quand la signature vieillit dans la baseline, l'alerte se résout.
+- **`anomaly`** — découpe `[now-baseline_secs, now-window]` en buckets de `window_secs` (zéros
+  inclus), calcule moyenne μ et écart-type σ du volume, puis le **z-score** du volume courant
+  `(courant-μ)/σ`. `comparator gt 3` = pic à +3σ ; `lt -3` = chute. Renvoie 0 (pas d'alerte) si
+  l'historique a < 3 buckets, si μ < `min_count`, ou si σ ≈ 0 (variance nulle = indécidable).
 
 ### Exemple
 
@@ -108,6 +127,26 @@ Détails utiles :
       "name": "latence p99 (métrique)", "kind": "metric_threshold",
       "metric_name": "http.server.duration", "service": "api", "agg": "p99",
       "window_secs": 300, "comparator": "gt", "threshold": 900, "cooldown_secs": 600
+    },
+    {
+      "name": "incident api (taux d'erreur ET latence)", "kind": "composite", "op": "all",
+      "severity": "critical", "cooldown_secs": 600,
+      "conditions": [
+        { "kind": "error_ratio", "source": "spans", "service": "api", "min_count": 50,
+          "window_secs": 300, "comparator": "gt", "threshold": 0.05 },
+        { "kind": "span_duration", "agg": "p95", "service": "api",
+          "window_secs": 300, "comparator": "gt", "threshold": 2000 }
+      ]
+    },
+    {
+      "name": "nouvelle erreur (jamais vue en 24h)", "kind": "log_new_signature",
+      "service": "api", "severity_min": 17, "group_by": "body", "baseline_secs": 86400,
+      "window_secs": 600, "comparator": "gte", "threshold": 1, "cooldown_secs": 0
+    },
+    {
+      "name": "volume de logs anormal", "kind": "anomaly", "source": "logs",
+      "service": "api", "severity_min": 17, "baseline_secs": 18000, "min_count": 5,
+      "window_secs": 300, "comparator": "gt", "threshold": 3, "cooldown_secs": 600
     }
   ]
 }

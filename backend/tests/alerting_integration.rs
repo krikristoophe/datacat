@@ -94,6 +94,29 @@ async fn insert_log_at(
     .unwrap();
 }
 
+/// Insère un log de sévérité + corps + instant donnés (pour `log_new_signature`).
+async fn insert_log_at_body(
+    pool: &PgPool,
+    service: &str,
+    severity: i16,
+    body: &str,
+    log_time: chrono::DateTime<Utc>,
+) {
+    sqlx::query(
+        "INSERT INTO logs \
+         (log_id, log_time, received_at, severity_number, severity_text, body, service_name, \
+          resource_attributes, log_attributes) \
+         VALUES (gen_random_uuid(), $1, now(), $2, 'X', $3, $4, '{}'::jsonb, '{}'::jsonb)",
+    )
+    .bind(log_time)
+    .bind(severity)
+    .bind(body)
+    .bind(service)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 /// Insère un span (latence + status) à `start_time` pour un service / opération donnés.
 async fn insert_span(
     pool: &PgPool,
@@ -576,4 +599,146 @@ async fn metric_threshold_p95_fires(pool: PgPool) {
     let n = evaluate_once(&pool, &rules, &mut state, &dispatcher, Utc::now()).await;
     assert_eq!(n, 1, "p95 au-dessus du seuil");
     assert!(recorder.alerts()[0].value > 1000.0);
+}
+
+// ── Conditions avancées : composite, new-signature, anomalie ──────────────────
+
+/// `composite` (op=all) : déclenche seulement quand **les deux** sous-conditions sont franchies.
+#[sqlx::test]
+async fn composite_all_requires_both(pool: PgPool) {
+    ensure_partitions(&pool).await;
+    let now = Utc::now();
+    // Beaucoup d'erreurs (taux élevé) mais spans rapides → une seule sous-condition franchie.
+    for _ in 0..6 {
+        insert_log_at(&pool, "api", 17, now).await;
+    }
+    for _ in 0..4 {
+        insert_log_at(&pool, "api", 9, now).await;
+    }
+    for _ in 0..5 {
+        insert_span(&pool, "api", "checkout", 50.0, 1, now).await;
+    }
+
+    let raw = r#"{ "rules": [
+        { "name":"incident api", "kind":"composite", "op":"all", "cooldown_secs":0,
+          "severity":"critical", "conditions":[
+            { "kind":"error_ratio", "source":"logs", "service":"api", "severity_min":17,
+              "min_count":5, "window_secs":300, "comparator":"gt", "threshold":0.3 },
+            { "kind":"span_duration", "agg":"p95", "service":"api", "operation":"checkout",
+              "window_secs":300, "comparator":"gt", "threshold":1000 }
+        ] }
+    ] }"#;
+    let rules = parse_rules(raw).unwrap();
+
+    let (recorder, dispatcher, mut state) = recorder_setup();
+
+    // Latence faible → la 2e condition n'est pas franchie → pas d'alerte.
+    let n1 = evaluate_once(&pool, &rules, &mut state, &dispatcher, now).await;
+    assert_eq!(n1, 0, "AND : une seule condition franchie ne suffit pas");
+
+    // On ajoute des spans lents → les deux conditions franchies → alerte.
+    for _ in 0..5 {
+        insert_span(&pool, "api", "checkout", 5000.0, 1, now).await;
+    }
+    let n2 = evaluate_once(&pool, &rules, &mut state, &dispatcher, now).await;
+    assert_eq!(n2, 1, "AND : les deux conditions franchies → déclenche");
+    let a = &recorder.alerts()[0];
+    assert_eq!(a.state, AlertState::Firing);
+    assert_eq!(a.value, 2.0, "2 sous-conditions franchies");
+}
+
+/// `composite` (op=any) : une seule sous-condition franchie suffit.
+#[sqlx::test]
+async fn composite_any_one_is_enough(pool: PgPool) {
+    ensure_partitions(&pool).await;
+    let now = Utc::now();
+    for _ in 0..20 {
+        insert_log_at(&pool, "api", 17, now).await; // beaucoup d'erreurs
+    }
+
+    let raw = r#"{ "rules": [
+        { "name":"souci api", "kind":"composite", "op":"any", "cooldown_secs":0, "conditions":[
+            { "kind":"log_count", "service":"api", "severity_min":17,
+              "window_secs":300, "comparator":"gt", "threshold":5 },
+            { "kind":"telemetry_count", "source":"metrics", "service":"api",
+              "window_secs":300, "comparator":"lte", "threshold":0 }
+        ] }
+    ] }"#;
+    let rules = parse_rules(raw).unwrap();
+
+    let (recorder, dispatcher, mut state) = recorder_setup();
+    let n = evaluate_once(&pool, &rules, &mut state, &dispatcher, now).await;
+    assert_eq!(n, 1, "OR : au moins une condition franchie → déclenche");
+    assert!(recorder.alerts()[0].value >= 1.0);
+}
+
+/// `log_new_signature` : un message d'erreur jamais vu dans la baseline déclenche ; un message
+/// déjà présent dans la baseline ne déclenche pas.
+#[sqlx::test]
+async fn log_new_signature_detects_first_seen(pool: PgPool) {
+    ensure_partitions(&pool).await;
+    let now = Utc::now();
+    // "connu" : présent dans la baseline (il y a 2h) ET maintenant → pas nouveau.
+    insert_log_at_body(
+        &pool,
+        "api",
+        17,
+        "known error",
+        now - chrono::Duration::hours(2),
+    )
+    .await;
+    insert_log_at_body(&pool, "api", 17, "known error", now).await;
+    // "fresh" : seulement maintenant → nouvelle signature.
+    insert_log_at_body(&pool, "api", 17, "brand new error", now).await;
+
+    let rules = parse_rules(
+        r#"{ "rules": [
+            { "name":"nouvelle erreur", "kind":"log_new_signature", "service":"api",
+              "severity_min":17, "group_by":"body", "baseline_secs":86400, "window_secs":600,
+              "comparator":"gte", "threshold":1, "cooldown_secs":0, "severity":"warning" }
+        ] }"#,
+    )
+    .unwrap();
+
+    let (recorder, dispatcher, mut state) = recorder_setup();
+    let n = evaluate_once(&pool, &rules, &mut state, &dispatcher, now).await;
+    assert_eq!(n, 1, "seule la signature jamais vue déclenche");
+    let alerts = recorder.alerts();
+    assert_eq!(alerts.len(), 1);
+    assert_eq!(alerts[0].group_key.as_deref(), Some("brand new error"));
+}
+
+/// `anomaly` : un volume courant très au-dessus de la baseline régulière donne un z-score élevé.
+#[sqlx::test]
+async fn anomaly_volume_spike_fires(pool: PgPool) {
+    ensure_partitions(&pool).await;
+    let now = Utc::now();
+    // Baseline régulière : ~2 logs par bucket de 300s sur les ~50 buckets précédents.
+    for bucket in 2..50 {
+        let t = now - chrono::Duration::seconds(300 * bucket);
+        insert_log_at(&pool, "api", 9, t).await;
+        insert_log_at(&pool, "api", 9, t).await;
+    }
+    // Fenêtre courante : pic de 40 logs.
+    for _ in 0..40 {
+        insert_log_at(&pool, "api", 9, now).await;
+    }
+
+    let rules = parse_rules(
+        r#"{ "rules": [
+            { "name":"anomalie volume logs", "kind":"anomaly", "source":"logs", "service":"api",
+              "baseline_secs":15000, "window_secs":300, "comparator":"gt", "threshold":3,
+              "cooldown_secs":0, "severity":"warning" }
+        ] }"#,
+    )
+    .unwrap();
+
+    let (recorder, dispatcher, mut state) = recorder_setup();
+    let n = evaluate_once(&pool, &rules, &mut state, &dispatcher, now).await;
+    assert_eq!(n, 1, "pic de volume détecté (z > 3)");
+    assert!(
+        recorder.alerts()[0].value > 3.0,
+        "z-score = {}",
+        recorder.alerts()[0].value
+    );
 }

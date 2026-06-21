@@ -111,6 +111,59 @@
       "threshold": 3,
       "cooldown_secs": 600,
       "severity": "warning"
+    },
+    {
+      "name": "incident api (taux d'erreur ET latence p95)",
+      "kind": "composite",
+      "op": "all",
+      "severity": "critical",
+      "cooldown_secs": 600,
+      "conditions": [
+        {
+          "kind": "error_ratio",
+          "source": "spans",
+          "service": "api",
+          "min_count": 50,
+          "window_secs": 300,
+          "comparator": "gt",
+          "threshold": 0.05
+        },
+        {
+          "kind": "span_duration",
+          "agg": "p95",
+          "service": "api",
+          "window_secs": 300,
+          "comparator": "gt",
+          "threshold": 2000
+        }
+      ]
+    },
+    {
+      "name": "nouvelle erreur jamais vue en 24h",
+      "kind": "log_new_signature",
+      "service": "api",
+      "severity_min": 17,
+      "group_by": "body",
+      "baseline_secs": 86400,
+      "window_secs": 600,
+      "comparator": "gte",
+      "threshold": 1,
+      "cooldown_secs": 0,
+      "severity": "warning"
+    },
+    {
+      "name": "volume de logs anormal (z-score)",
+      "kind": "anomaly",
+      "source": "logs",
+      "service": "api",
+      "severity_min": 17,
+      "baseline_secs": 18000,
+      "min_count": 5,
+      "window_secs": 300,
+      "comparator": "gt",
+      "threshold": 3,
+      "cooldown_secs": 600,
+      "severity": "warning"
     }
   ]
 }

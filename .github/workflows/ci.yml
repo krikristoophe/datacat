@@ -45,7 +45,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: sdk-typescript
+        working-directory: sdks/typescript
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -61,7 +61,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: sdk-flutter
+        working-directory: sdks/flutter
     steps:
       - uses: actions/checkout@v4
       - uses: dart-lang/setup-dart@v1

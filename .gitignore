@@ -14,15 +14,15 @@ keys/
 
 # Node / TS SDK
 node_modules/
-sdk-typescript/dist/
+sdks/typescript/dist/
 *.tsbuildinfo
 .npm/
 
 # Dart / Flutter SDK
-sdk-flutter/.dart_tool/
-sdk-flutter/.packages
-sdk-flutter/build/
-sdk-flutter/pubspec.lock
+sdks/flutter/.dart_tool/
+sdks/flutter/.packages
+sdks/flutter/build/
+sdks/flutter/pubspec.lock
 
 # OS / editor
 .DS_Store

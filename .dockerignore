@@ -1,9 +1,9 @@
 target
 **/target
 node_modules
-sdk-typescript/dist
-sdk-flutter/.dart_tool
-sdk-flutter/build
+sdks/typescript/dist
+sdks/flutter/.dart_tool
+sdks/flutter/build
 .git
 *.md
 !backend/migrations/**

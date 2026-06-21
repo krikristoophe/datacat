@@ -13,8 +13,8 @@ idempotente, scalable et auditable, avec PostgreSQL comme unique base.
 | Dossier | Description |
 |---|---|
 | [`backend/`](backend/) | API d'ingestion **Axum** (Rust) + migrations **sqlx** + tests |
-| [`sdk-typescript/`](sdk-typescript/) | SDK web (TypeScript) |
-| [`sdk-flutter/`](sdk-flutter/) | SDK mobile (Dart, compatible Flutter) |
+| [`sdks/typescript/`](sdks/typescript/) | SDK web (TypeScript) |
+| [`sdks/flutter/`](sdks/flutter/) | SDK mobile (Dart, compatible Flutter) |
 | [`docs/`](docs/) | Contrat, déploiement, intégration, contrat de token, sécurité, architecture |
 
 ## Architecture (v1)

@@ -17,7 +17,7 @@ use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 use crate::config::Config;
-use crate::model::StoredEvent;
+use crate::events::model::StoredEvent;
 
 /// Compteurs d'observabilité (exposés via `/stats`, journalisés à chaque flush).
 #[derive(Default)]

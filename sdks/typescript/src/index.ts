@@ -13,7 +13,7 @@
  * Use the `redact` option to sanitize properties before transmission.
  */
 
-export { createDatacatClient } from "./client.js";
+export { createDatacatClient } from "./client/index.js";
 export type {
   DatacatClient,
   DatacatClientOptions,
@@ -22,4 +22,4 @@ export type {
   DatacatBatchPayload,
   DatacatBeaconPayload,
   StorageAdapter,
-} from "./types.js";
+} from "./types/index.js";

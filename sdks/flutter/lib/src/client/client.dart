@@ -4,9 +4,9 @@ import 'package:http/http.dart' as http;
 import 'package:meta/meta.dart';
 import 'package:uuid/uuid.dart';
 
-import 'event.dart';
-import 'storage.dart';
-import 'token_cache.dart';
+import '../core/event.dart';
+import '../core/storage.dart';
+import '../token/token_cache.dart';
 
 /// Configuration for [DatacatClient].
 @immutable

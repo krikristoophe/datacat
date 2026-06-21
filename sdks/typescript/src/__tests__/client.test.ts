@@ -15,8 +15,8 @@
  */
 
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { createDatacatClient } from "../client.js";
-import type { DatacatEvent } from "../types.js";
+import { createDatacatClient } from "../client/index.js";
+import type { DatacatEvent } from "../types/index.js";
 import {
   makeMemoryStorage,
   validToken,

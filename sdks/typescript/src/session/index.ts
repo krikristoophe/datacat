@@ -9,7 +9,7 @@
  * Falls back to an in-memory value if sessionStorage is unavailable (SSR, private mode, etc.).
  */
 
-import type { StorageAdapter } from "./types.js";
+import type { StorageAdapter } from "../types/index.js";
 
 const SESSION_KEY = "datacat_session_id";
 

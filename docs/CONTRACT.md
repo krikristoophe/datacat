@@ -1,7 +1,7 @@
 # Datacat — Contrat partagé (event + token)
 
 Ce document est la **source de vérité unique** du contrat d'ingestion. Le backend
-(`backend/`) et les deux SDKs (`sdk-typescript/`, `sdk-flutter/`) DOIVENT s'y conformer
+(`backend/`) et les deux SDKs (`sdks/typescript/`, `sdks/flutter/`) DOIVENT s'y conformer
 à l'identique. Toute évolution se fait ici d'abord.
 
 ---

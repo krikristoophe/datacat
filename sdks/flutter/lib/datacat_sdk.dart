@@ -9,7 +9,8 @@
 /// persistent session storage, see the README.
 library;
 
-export 'src/client.dart' show DatacatClient, DatacatConfig, HttpException;
-export 'src/event.dart' show DatacatEvent;
-export 'src/storage.dart' show DatacatStorage, InMemoryStorage;
-export 'src/token_cache.dart' show TokenCache;
+export 'src/client/client.dart'
+    show DatacatClient, DatacatConfig, HttpException;
+export 'src/core/event.dart' show DatacatEvent;
+export 'src/core/storage.dart' show DatacatStorage, InMemoryStorage;
+export 'src/token/token_cache.dart' show TokenCache;

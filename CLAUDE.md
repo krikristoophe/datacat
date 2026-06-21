@@ -18,8 +18,8 @@ sur l'ingestion** : capturer des events de façon robuste, scalable et auditable
 
 ```
 backend/          API d'ingestion Axum + migrations sqlx + tests
-sdk-typescript/   SDK web (TypeScript)
-sdk-flutter/      SDK mobile (Dart, compatible Flutter)
+sdks/typescript/   SDK web (TypeScript)
+sdks/flutter/      SDK mobile (Dart, compatible Flutter)
 docs/             CONTRACT.md (source de vérité), déploiement, intégration, token, sécurité
 docker-compose.yml  PostgreSQL pour dev/test
 ```
@@ -45,10 +45,10 @@ cargo clippy --all-targets -- -D warnings
 cargo fmt --check
 
 # SDK TypeScript
-cd sdk-typescript && npm install && npm test && npm run build
+cd sdks/typescript && npm install && npm test && npm run build
 
 # SDK Flutter/Dart
-cd sdk-flutter && dart pub get && dart test
+cd sdks/flutter && dart pub get && dart test
 ```
 
 ## Conventions de code

@@ -2,7 +2,7 @@
  * Test helpers: mock factories and utilities.
  */
 
-import type { StorageAdapter } from "../types.js";
+import type { StorageAdapter } from "../types/index.js";
 
 /** In-memory storage adapter for tests. */
 export function makeMemoryStorage(): StorageAdapter {

@@ -12,9 +12,8 @@ use chrono::Utc;
 use serde_json::json;
 
 use crate::error::{AppError, AppResult};
-use crate::model::{check_event, EventCheck, IngestBody, StructuralError};
-use crate::ratelimit::Decision;
-use crate::security;
+use crate::events::model::{check_event, EventCheck, IngestBody, StructuralError};
+use crate::security::{self, Decision};
 use crate::AppState;
 
 /// `POST /v1/events` — ingestion d'un batch d'events.
@@ -22,7 +21,7 @@ use crate::AppState;
 /// Acquittement immédiat (202) ; l'écriture en base est asynchrone (micro-batch). La
 /// déduplication a lieu en base : `received` est le nombre d'events acceptés pour écriture,
 /// pas le nombre d'insertions réelles.
-pub async fn ingest(
+pub async fn ingest_events(
     State(state): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,

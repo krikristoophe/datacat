@@ -14,10 +14,14 @@ import type {
   DatacatClientOptions,
   DatacatEvent,
   StorageAdapter,
-} from "./types.js";
-import { TokenManager } from "./token.js";
-import { resolveSessionId, newEventId, buildStorageAdapter } from "./session.js";
-import { EventQueue, type QueuedEvent } from "./queue.js";
+} from "../types/index.js";
+import { TokenManager } from "../token/index.js";
+import {
+  resolveSessionId,
+  newEventId,
+  buildStorageAdapter,
+} from "../session/index.js";
+import { EventQueue, type QueuedEvent } from "../queue/index.js";
 
 const DEFAULT_BATCH_SIZE = 20;
 const DEFAULT_FLUSH_INTERVAL_MS = 5000;

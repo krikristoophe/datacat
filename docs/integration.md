@@ -26,7 +26,7 @@ ou `TOKEN_JWKS_URL`) — cf. [`deployment.md`](deployment.md).
 
 ## 2. SDK Web (TypeScript / React)
 
-Installation : le package `@datacat/sdk-web` (dossier [`sdk-typescript/`](../sdk-typescript/)).
+Installation : le package `@datacat/sdk-web` (dossier [`sdks/typescript/`](../sdks/typescript/)).
 
 ```ts
 import { createDatacatClient } from "@datacat/sdk-web";
@@ -61,7 +61,7 @@ renouvellement du token, et flush de fin de session via `navigator.sendBeacon`/`
 
 ## 3. SDK Mobile (Flutter / Dart)
 
-Package `datacat_sdk` (dossier [`sdk-flutter/`](../sdk-flutter/)).
+Package `datacat_sdk` (dossier [`sdks/flutter/`](../sdks/flutter/)).
 
 ```dart
 import 'package:datacat_sdk/datacat_sdk.dart';

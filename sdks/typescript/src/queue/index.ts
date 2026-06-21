@@ -10,7 +10,7 @@
  *   (loss is tolerated per CONTRACT.md §2.3; reported via onError).
  */
 
-import type { DatacatEvent } from "./types.js";
+import type { DatacatEvent } from "../types/index.js";
 
 export interface QueuedEvent {
   event: DatacatEvent;

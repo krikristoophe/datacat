@@ -42,6 +42,12 @@ Décisions clés :
   **rate limiting à deux niveaux** (par `session_id` + plafond de sessions par IP) + filet
   global, **vérification du token** par signature asymétrique (clé publique seule), CORS,
   détection d'anomalies, TLS. Conçu pour passer un **audit HDS**.
+- **Logs techniques OpenTelemetry** : endpoint `POST /v1/logs` au format **OTLP/HTTP** (même
+  socle partitionné/idempotent que les events), corrélés aux events via `session_id` /
+  `actor_id` / `tenant_id` et aux traces via `trace_id`. Voir [docs/otel-logs.md](docs/otel-logs.md).
+- **Mini-projet d'intégration** : `examples/` contient un backend Rust de démo (émet le token
+  d'ingestion + ses logs OTLP) et une app React (SDK analytics) pour valider l'intégration
+  complète events + logs de bout en bout.
 
 ## Démarrage rapide
 

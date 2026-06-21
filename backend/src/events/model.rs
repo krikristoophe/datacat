@@ -6,6 +6,7 @@ use serde_json::Value;
 use uuid::Uuid;
 
 use crate::config::ValidationLimits;
+use crate::ingest::{push_csv_opt, push_csv_quoted, Ingestable};
 
 /// Corps de la requête d'ingestion. `token` est le repli beacon (cf. CONTRACT §1.1).
 #[derive(Debug, Deserialize)]
@@ -40,6 +41,46 @@ pub struct StoredEvent {
     pub timestamp_client: DateTime<Utc>,
     pub received_at: DateTime<Utc>,
     pub properties: Value,
+}
+
+impl Ingestable for StoredEvent {
+    fn copy_statement() -> &'static str {
+        "COPY events_staging \
+         (event_id, event_name, tenant_id, actor_id, session_id, \
+          timestamp_client, received_at, properties) \
+         FROM STDIN WITH (FORMAT csv)"
+    }
+    fn ensure_partitions_statement() -> &'static str {
+        "SELECT datacat_ensure_partitions_for_staging()"
+    }
+    fn merge_statement() -> &'static str {
+        "SELECT datacat_merge_staging()"
+    }
+    fn staging_table() -> &'static str {
+        "events_staging"
+    }
+    fn label() -> &'static str {
+        "events"
+    }
+    fn write_csv_row(&self, out: &mut String) {
+        out.push_str(&self.event_id.to_string());
+        out.push(',');
+        push_csv_quoted(out, &self.event_name);
+        out.push(',');
+        push_csv_opt(out, self.tenant_id.as_deref());
+        out.push(',');
+        push_csv_quoted(out, &self.actor_id);
+        out.push(',');
+        push_csv_quoted(out, &self.session_id);
+        out.push(',');
+        out.push_str(&self.timestamp_client.to_rfc3339());
+        out.push(',');
+        out.push_str(&self.received_at.to_rfc3339());
+        out.push(',');
+        let props = serde_json::to_string(&self.properties).unwrap_or_else(|_| "{}".to_string());
+        push_csv_quoted(out, &props);
+        out.push('\n');
+    }
 }
 
 /// Résultat de validation d'un event.
@@ -237,5 +278,50 @@ mod tests {
         assert_eq!(json_depth(&serde_json::json!({"a": 1})), 1);
         assert_eq!(json_depth(&serde_json::json!({"a": {"b": 1}})), 2);
         assert_eq!(json_depth(&serde_json::json!([[1]])), 2);
+    }
+}
+
+#[cfg(test)]
+mod csv_tests {
+    use super::*;
+    use chrono::TimeZone;
+    use serde_json::json;
+
+    fn ev(name: &str, props: Value, tenant: Option<&str>) -> StoredEvent {
+        let ts = Utc.with_ymd_and_hms(2026, 6, 21, 10, 0, 0).unwrap();
+        StoredEvent {
+            event_id: Uuid::nil(),
+            event_name: name.to_string(),
+            tenant_id: tenant.map(|s| s.to_string()),
+            actor_id: "actor-1".to_string(),
+            session_id: "sess-1".to_string(),
+            timestamp_client: ts,
+            received_at: ts,
+            properties: props,
+        }
+    }
+
+    #[test]
+    fn csv_escapes_quotes_and_commas() {
+        let mut out = String::new();
+        ev("na\"me,with", json!({"a": "x,y\"z"}), Some("t1")).write_csv_row(&mut out);
+        assert!(out.contains("\"na\"\"me,with\""), "got: {out}");
+        assert!(out.ends_with('\n'));
+
+        // Round-trip CSV (FORMAT csv) → JSON d'origine.
+        let json_str = serde_json::to_string(&json!({"a": "x,y\"z"})).unwrap();
+        let mut quoted = String::new();
+        push_csv_quoted(&mut quoted, &json_str);
+        let inner = &quoted[1..quoted.len() - 1];
+        let unquoted = inner.replace("\"\"", "\"");
+        assert_eq!(unquoted, json_str);
+    }
+
+    #[test]
+    fn csv_null_tenant_is_empty_field() {
+        let mut out = String::new();
+        ev("click", json!({}), None).write_csv_row(&mut out);
+        let fields: Vec<&str> = out.trim_end().splitn(4, ',').collect();
+        assert_eq!(fields[2], ""); // tenant_id NULL
     }
 }

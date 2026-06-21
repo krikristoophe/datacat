@@ -11,7 +11,9 @@ use sqlx::PgPool;
 use tokio::time::{interval, Duration};
 
 use datacat_ingest::config::Config;
+use datacat_ingest::events::model::StoredEvent;
 use datacat_ingest::ingest::{self, IngestMetrics};
+use datacat_ingest::logs::StoredLog;
 use datacat_ingest::security::AnomalyGuard;
 use datacat_ingest::security::RateLimiter;
 use datacat_ingest::security::TokenVerifier;
@@ -32,19 +34,40 @@ async fn main() -> Result<()> {
         (config.limits.max_future_skew.as_secs() / 86_400) as i64 + 1,
     );
     db::ensure_partition_window(&pool, past_days, future_days).await?;
+    db::ensure_log_partition_window(&pool, past_days, future_days).await?;
 
-    match db::drain_staging(&pool).await {
-        Ok(n) if n > 0 => tracing::info!(merged = n, "staging résiduel fusionné au démarrage"),
-        Ok(_) => {}
-        Err(e) => tracing::warn!(error = %e, "drain du staging au démarrage ignoré"),
+    for (domain, drained) in [
+        ("events", db::drain_staging(&pool).await),
+        ("logs", db::drain_log_staging(&pool).await),
+    ] {
+        match drained {
+            Ok(n) if n > 0 => tracing::info!(domain, merged = n, "staging résiduel fusionné"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(domain, error = %e, "drain du staging au démarrage ignoré"),
+        }
     }
     if let Err(e) = db::purge_old_partitions(&pool, config.retention_days).await {
-        tracing::warn!(error = %e, "purge initiale des partitions ignorée");
+        tracing::warn!(error = %e, "purge initiale des partitions (events) ignorée");
+    }
+    if let Err(e) = db::purge_old_log_partitions(&pool, config.retention_days).await {
+        tracing::warn!(error = %e, "purge initiale des partitions (logs) ignorée");
     }
 
-    // --- Composants d'ingestion ---
-    let metrics = Arc::new(IngestMetrics::default());
-    let (ingestor, batcher) = ingest::spawn(pool.clone(), &config, Arc::clone(&metrics));
+    // --- Composants d'ingestion (un batcher par domaine) ---
+    let (events, events_batcher) = ingest::spawn::<StoredEvent>(
+        pool.clone(),
+        config.flush_interval,
+        config.flush_batch_size,
+        config.channel_capacity,
+        Arc::new(IngestMetrics::default()),
+    );
+    let (logs, logs_batcher) = ingest::spawn::<StoredLog>(
+        pool.clone(),
+        config.flush_interval,
+        config.flush_batch_size,
+        config.channel_capacity,
+        Arc::new(IngestMetrics::default()),
+    );
 
     let verifier = TokenVerifier::new(&config.token).await?;
     verifier.spawn_refresh();
@@ -67,13 +90,13 @@ async fn main() -> Result<()> {
     );
 
     let state = AppState {
-        ingestor,
+        events,
+        logs,
         limiter,
         verifier,
         anomaly,
         limits: Arc::new(config.limits.clone()),
         config: Arc::clone(&config),
-        metrics,
         pool: pool.clone(),
         ready: Arc::new(AtomicBool::new(true)),
     };
@@ -87,9 +110,10 @@ async fn main() -> Result<()> {
         .with_graceful_shutdown(shutdown_signal())
         .await?;
 
-    // --- Arrêt propre : flush final du batcher, fermeture du pool ---
-    tracing::info!("arrêt en cours — flush final du batcher");
-    batcher.shutdown().await;
+    // --- Arrêt propre : flush final des batchers, fermeture du pool ---
+    tracing::info!("arrêt en cours — flush final des batchers");
+    events_batcher.shutdown().await;
+    logs_batcher.shutdown().await;
     pool.close().await;
     tracing::info!("arrêt terminé");
     Ok(())
@@ -110,12 +134,24 @@ fn spawn_maintenance(
         loop {
             tick.tick().await;
             if let Err(e) = db::ensure_partition_window(&pool, past_days, future_days).await {
-                tracing::warn!(error = %e, "maintenance: création de partitions échouée");
+                tracing::warn!(error = %e, "maintenance: création de partitions (events) échouée");
+            }
+            if let Err(e) = db::ensure_log_partition_window(&pool, past_days, future_days).await {
+                tracing::warn!(error = %e, "maintenance: création de partitions (logs) échouée");
             }
             match db::purge_old_partitions(&pool, config.retention_days).await {
-                Ok(n) if n > 0 => tracing::info!(dropped = n, "partitions purgées (rétention)"),
+                Ok(n) if n > 0 => {
+                    tracing::info!(domain = "events", dropped = n, "partitions purgées")
+                }
                 Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "maintenance: purge échouée"),
+                Err(e) => tracing::warn!(error = %e, "maintenance: purge (events) échouée"),
+            }
+            match db::purge_old_log_partitions(&pool, config.retention_days).await {
+                Ok(n) if n > 0 => {
+                    tracing::info!(domain = "logs", dropped = n, "partitions purgées")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "maintenance: purge (logs) échouée"),
             }
         }
     });

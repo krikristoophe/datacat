@@ -93,6 +93,11 @@ pub struct Config {
     pub retention_days: i64,
     pub partition_future_days: i64,
 
+    /// Nombre max de `LogRecord` OTLP par requête.
+    pub max_logs_records: usize,
+    /// Taille max du corps de la requête de logs (OTLP peut être plus volumineux).
+    pub max_logs_payload_bytes: usize,
+
     pub request_timeout: Duration,
     pub trust_forwarded_for: bool,
 
@@ -152,6 +157,8 @@ impl Config {
             channel_capacity: env_parse("CHANNEL_CAPACITY", 100_000)?,
             retention_days: env_parse("RETENTION_DAYS", 90)?,
             partition_future_days: env_parse("PARTITION_FUTURE_DAYS", 2)?,
+            max_logs_records: env_parse("MAX_LOGS_RECORDS", 2_048)?,
+            max_logs_payload_bytes: env_parse("MAX_LOGS_PAYLOAD_BYTES", 4_194_304)?,
             request_timeout: env_duration("REQUEST_TIMEOUT", Duration::from_secs(15))?,
             trust_forwarded_for: env_bool("TRUST_FORWARDED_FOR", false)?,
             limits,

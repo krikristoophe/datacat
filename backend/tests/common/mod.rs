@@ -1,6 +1,9 @@
 //! Utilitaires partagés par les tests d'intégration : démarrage de l'app sur un port
 //! éphémère, signature de tokens de test, attente de persistance.
 
+// Module partagé par plusieurs binaires de test ; chacun n'en utilise qu'un sous-ensemble.
+#![allow(dead_code)]
+
 use std::net::SocketAddr;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -14,7 +17,9 @@ use sqlx::PgPool;
 use datacat_ingest::config::{
     AnomalyConfig, Config, CorsOrigins, KeySource, RateLimitConfig, TokenConfig, ValidationLimits,
 };
+use datacat_ingest::events::model::StoredEvent;
 use datacat_ingest::ingest::{self, BatcherHandle, IngestMetrics};
+use datacat_ingest::logs::StoredLog;
 use datacat_ingest::security::{AnomalyGuard, RateLimiter, TokenVerifier};
 use datacat_ingest::{build_router, db, AppState};
 
@@ -82,6 +87,8 @@ pub fn test_config(token: TokenConfig, tweak: impl FnOnce(&mut Config)) -> Confi
         channel_capacity: 200_000,
         retention_days: 90,
         partition_future_days: 2,
+        max_logs_records: 2_048,
+        max_logs_payload_bytes: 4_194_304,
         request_timeout: Duration::from_secs(15),
         trust_forwarded_for: false,
         limits: ValidationLimits {
@@ -144,12 +151,15 @@ pub fn token_disabled() -> TokenConfig {
     }
 }
 
-/// App de test démarrée : URL de base + métriques + poignée d'arrêt du batcher.
+/// App de test démarrée : URL de base + métriques + poignées d'arrêt des batchers.
 pub struct TestApp {
     pub base_url: String,
+    /// Métriques du domaine events (compat. tests existants).
     pub metrics: Arc<IngestMetrics>,
+    /// Métriques du domaine logs.
+    pub logs_metrics: Arc<IngestMetrics>,
     pub pool: PgPool,
-    pub batcher: Option<BatcherHandle>,
+    batchers: Vec<BatcherHandle>,
 }
 
 impl TestApp {
@@ -168,6 +178,13 @@ impl TestApp {
             .unwrap()
     }
 
+    pub async fn count_logs(&self) -> i64 {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM logs")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+    }
+
     /// Attend que le nombre total d'events atteigne `expected` (flush asynchrone).
     pub async fn wait_total(&self, expected: i64, timeout: Duration) -> i64 {
         let deadline = Instant::now() + timeout;
@@ -180,8 +197,20 @@ impl TestApp {
         }
     }
 
+    /// Attend que le nombre total de logs atteigne `expected`.
+    pub async fn wait_logs(&self, expected: i64, timeout: Duration) -> i64 {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let c = self.count_logs().await;
+            if c >= expected || Instant::now() >= deadline {
+                return c;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
     pub async fn shutdown(mut self) {
-        if let Some(b) = self.batcher.take() {
+        for b in self.batchers.drain(..) {
             b.shutdown().await;
         }
     }
@@ -190,22 +219,37 @@ impl TestApp {
 /// Démarre l'app complète sur un port éphémère en utilisant le pool de test fourni.
 pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
     db::ensure_partition_window(&pool, 40, 3).await.unwrap();
+    db::ensure_log_partition_window(&pool, 40, 3).await.unwrap();
 
     let metrics = Arc::new(IngestMetrics::default());
-    let (ingestor, batcher) = ingest::spawn(pool.clone(), &cfg, Arc::clone(&metrics));
+    let logs_metrics = Arc::new(IngestMetrics::default());
+    let (events, events_batcher) = ingest::spawn::<StoredEvent>(
+        pool.clone(),
+        cfg.flush_interval,
+        cfg.flush_batch_size,
+        cfg.channel_capacity,
+        Arc::clone(&metrics),
+    );
+    let (logs, logs_batcher) = ingest::spawn::<StoredLog>(
+        pool.clone(),
+        cfg.flush_interval,
+        cfg.flush_batch_size,
+        cfg.channel_capacity,
+        Arc::clone(&logs_metrics),
+    );
     let verifier = TokenVerifier::new(&cfg.token).await.unwrap();
     let limiter = Arc::new(RateLimiter::new(cfg.rate_limit.clone(), Instant::now()));
     let anomaly = Arc::new(AnomalyGuard::new(cfg.anomaly.clone()));
     let cfg = Arc::new(cfg);
 
     let state = AppState {
-        ingestor,
+        events,
+        logs,
         limiter,
         verifier,
         anomaly,
         limits: Arc::new(cfg.limits.clone()),
         config: Arc::clone(&cfg),
-        metrics: Arc::clone(&metrics),
         pool: pool.clone(),
         ready: Arc::new(AtomicBool::new(true)),
     };
@@ -220,8 +264,9 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
     TestApp {
         base_url: format!("http://{addr}"),
         metrics,
+        logs_metrics,
         pool,
-        batcher: Some(batcher),
+        batchers: vec![events_batcher, logs_batcher],
     }
 }
 

@@ -13,6 +13,7 @@ pub mod db;
 pub mod error;
 pub mod events;
 pub mod ingest;
+pub mod logs;
 pub mod security;
 pub mod telemetry;
 
@@ -22,7 +23,9 @@ use std::sync::Arc;
 use sqlx::PgPool;
 
 use crate::config::{Config, ValidationLimits};
-use crate::ingest::{IngestMetrics, Ingestor};
+use crate::events::model::StoredEvent;
+use crate::ingest::Ingestor;
+use crate::logs::StoredLog;
 use crate::security::{AnomalyGuard, RateLimiter, TokenVerifier};
 
 pub use api::build_router;
@@ -30,13 +33,15 @@ pub use api::build_router;
 /// État partagé par tous les handlers (cloné par requête ; tout est derrière `Arc`).
 #[derive(Clone)]
 pub struct AppState {
-    pub ingestor: Ingestor,
+    /// Ingestion des events produit (`/v1/events`).
+    pub events: Ingestor<StoredEvent>,
+    /// Ingestion des logs techniques OTLP (`/v1/logs`).
+    pub logs: Ingestor<StoredLog>,
     pub limiter: Arc<RateLimiter>,
     pub verifier: Arc<TokenVerifier>,
     pub anomaly: Arc<AnomalyGuard>,
     pub limits: Arc<ValidationLimits>,
     pub config: Arc<Config>,
-    pub metrics: Arc<IngestMetrics>,
     pub pool: PgPool,
     pub ready: Arc<AtomicBool>,
 }

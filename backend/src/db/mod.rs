@@ -1,7 +1,10 @@
 //! Connexion PostgreSQL, migrations et gestion des partitions.
 
 mod partitions;
-pub use partitions::{drain_staging, ensure_partition_window, purge_old_partitions};
+pub use partitions::{
+    drain_log_staging, drain_staging, ensure_log_partition_window, ensure_partition_window,
+    purge_old_log_partitions, purge_old_partitions,
+};
 
 use std::time::Duration;
 

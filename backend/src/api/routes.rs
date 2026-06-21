@@ -13,6 +13,7 @@ use serde_json::json;
 
 use crate::error::{AppError, AppResult};
 use crate::events::model::{check_event, EventCheck, IngestBody, StructuralError};
+use crate::logs::{otlp_to_logs, ExportLogsServiceRequest};
 use crate::security::{self, Decision};
 use crate::AppState;
 
@@ -114,15 +115,106 @@ pub async fn ingest_events(
     }
     if dropped_skew > 0 {
         state
+            .events
             .metrics
             .dropped_skew_total
             .fetch_add(dropped_skew, Ordering::Relaxed);
     }
 
     // 6. Enfilage non bloquant (acquittement immédiat).
-    let received = state.ingestor.try_enqueue(stored);
+    let received = state.events.try_enqueue(stored);
 
     Ok((StatusCode::ACCEPTED, Json(json!({ "received": received }))))
+}
+
+/// `POST /v1/logs` — ingestion de logs techniques au format **OTLP/HTTP JSON**
+/// (`ExportLogsServiceRequest`). Compatible avec tout SDK OpenTelemetry / Collector
+/// (`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`).
+///
+/// Acquittement OTLP : `200` + `ExportLogsServiceResponse` (`partialSuccess` si des
+/// enregistrements ont été écartés).
+pub async fn ingest_logs(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> AppResult<impl IntoResponse> {
+    let now = Instant::now();
+    let ip = security::client_ip(&headers, peer.ip(), state.config.trust_forwarded_for);
+
+    if state.anomaly.is_banned(ip, now) {
+        return Err(AppError::RateLimited {
+            scope: "anomaly_ban",
+            retry_after_secs: 60,
+        });
+    }
+
+    // Token (clé publique). Les logs proviennent de backends de confiance, qui présentent un
+    // token signé au même titre que les SDKs. La session de confiance sert de clé de rate limit.
+    let rl_key = if state.verifier.enabled() {
+        let token = extract_token(&headers, None).ok_or_else(|| {
+            state.anomaly.record_bad(ip, now);
+            AppError::Unauthorized("token d'ingestion requis".into())
+        })?;
+        match state.verifier.verify(token) {
+            Ok(v) => v.session_id,
+            Err(msg) => {
+                state.anomaly.record_bad(ip, now);
+                return Err(AppError::Unauthorized(msg));
+            }
+        }
+    } else {
+        ip.to_string()
+    };
+
+    if let Decision::Deny {
+        scope,
+        retry_after_secs,
+    } = state.limiter.check(now, ip, &rl_key, 1)
+    {
+        state.anomaly.record_bad(ip, now);
+        return Err(AppError::RateLimited {
+            scope,
+            retry_after_secs,
+        });
+    }
+
+    let req: ExportLogsServiceRequest = serde_json::from_slice(&body).map_err(|e| {
+        state.anomaly.record_bad(ip, now);
+        AppError::bad_request(format!("OTLP JSON invalide: {e}"))
+    })?;
+
+    let received_at = Utc::now();
+    let mut parsed = otlp_to_logs(req, received_at, &state.limits);
+
+    if parsed.stored.len() > state.config.max_logs_records {
+        state.anomaly.record_bad(ip, now);
+        return Err(AppError::PayloadTooLarge(format!(
+            "{} LogRecords > maximum {}",
+            parsed.stored.len(),
+            state.config.max_logs_records
+        )));
+    }
+    if parsed.dropped_skew > 0 {
+        state
+            .logs
+            .metrics
+            .dropped_skew_total
+            .fetch_add(parsed.dropped_skew, Ordering::Relaxed);
+    }
+
+    let accepted = std::mem::take(&mut parsed.stored);
+    let total = accepted.len() as u64;
+    let enqueued = state.logs.try_enqueue(accepted) as u64;
+    let rejected = total - enqueued;
+
+    // Réponse OTLP : partialSuccess si des enregistrements n'ont pas été retenus.
+    let response = if rejected > 0 {
+        json!({ "partialSuccess": { "rejectedLogRecords": rejected, "errorMessage": "back-pressure" } })
+    } else {
+        json!({})
+    };
+    Ok((StatusCode::OK, Json(response)))
 }
 
 /// Extrait le token : en-tête `Authorization: Bearer` en priorité, sinon champ `token` du corps
@@ -167,10 +259,11 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-/// `GET /stats` — compteurs d'observabilité.
+/// `GET /stats` — compteurs d'observabilité (events + logs).
 pub async fn stats(State(state): State<AppState>) -> impl IntoResponse {
     Json(json!({
-        "ingest": state.metrics.snapshot(),
+        "events": state.events.metrics.snapshot(),
+        "logs": state.logs.metrics.snapshot(),
         "rate_limit": {
             "tracked_sessions": state.limiter.tracked_sessions(),
             "tracked_ips": state.limiter.tracked_ips(),

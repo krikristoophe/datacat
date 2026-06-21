@@ -7,5 +7,6 @@
 | [deployment.md](deployment.md) | Déploiement simple et reproductible (Docker, env, migrations, rétention, santé). |
 | [integration.md](integration.md) | Intégration rapide dans une app existante (endpoint de token, SDK web & Flutter). |
 | [token-contract.md](token-contract.md) | Spécification d'émission du token (hors scope) pour les backends consommateurs. |
+| [otel-logs.md](otel-logs.md) | Ingestion des logs techniques OpenTelemetry (OTLP/HTTP) + corrélation. |
 | [security.md](security.md) | Modèle de menace, contrôles, posture d'audit HDS. |
 | [CONFORMITE.md](CONFORMITE.md) | Matrice : chaque critère d'acceptation §12 → implémentation + preuve de test. |

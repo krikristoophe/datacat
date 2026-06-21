@@ -19,13 +19,21 @@ use crate::AppState;
 pub fn build_router(state: AppState) -> Router {
     let cors = build_cors(&state.config.cors);
     let body_limit = state.config.limits.max_payload_bytes;
+    let logs_body_limit = state.config.max_logs_payload_bytes;
     let timeout = state.config.request_timeout;
+
+    // Les logs OTLP ont leur propre (plus grande) limite de corps : route isolée puis fusionnée.
+    // La limite la plus interne l'emporte pour cette route.
+    let logs_routes = Router::new()
+        .route("/v1/logs", post(routes::ingest_logs))
+        .layer(axum::extract::DefaultBodyLimit::max(logs_body_limit));
 
     Router::new()
         .route("/v1/events", post(routes::ingest_events))
         .route("/healthz", get(routes::healthz))
         .route("/readyz", get(routes::readyz))
         .route("/stats", get(routes::stats))
+        .merge(logs_routes)
         .layer(
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))

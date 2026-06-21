@@ -1,13 +1,14 @@
-//! Ingestion asynchrone : micro-batch en mémoire → `COPY` → merge idempotent.
+//! Ingestion asynchrone générique : micro-batch en mémoire → `COPY` → merge idempotent.
 //!
-//! L'API HTTP se contente d'enfiler les events validés (acquittement immédiat). Une tâche de
-//! fond unique accumule un micro-batch et l'écrit via `COPY` dans la table de staging UNLOGGED,
-//! puis fusionne de façon idempotente vers `events` (cf. migrations/0002_functions.sql).
-//! Un seul writer ⇒ pas de contention sur le staging ; `COPY` sature l'écriture sans le coût
-//! des INSERT ligne à ligne.
+//! Le mécanisme est partagé par tous les domaines (events produit, logs techniques) via le
+//! trait [`Ingestable`]. L'API HTTP enfile les enregistrements validés (acquittement immédiat) ;
+//! une tâche de fond unique par domaine accumule un micro-batch et l'écrit via `COPY` dans une
+//! table de staging `UNLOGGED`, puis fusionne de façon idempotente vers la table cible. Un seul
+//! writer par domaine ⇒ pas de contention sur le staging ; `COPY` sature l'écriture.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 
 use anyhow::Result;
 use serde_json::json;
@@ -16,19 +17,51 @@ use tokio::sync::{mpsc, watch};
 use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
-use crate::config::Config;
-use crate::events::model::StoredEvent;
+/// Un enregistrement persistable par micro-batch + COPY (events, logs, …).
+pub trait Ingestable: Send + Sync + 'static {
+    /// `COPY <staging> (...) FROM STDIN WITH (FORMAT csv)`.
+    fn copy_statement() -> &'static str;
+    /// Requête garantissant l'existence des partitions des lignes en staging.
+    fn ensure_partitions_statement() -> &'static str;
+    /// Requête de merge idempotent (retourne un `bigint` = lignes réellement insérées).
+    fn merge_statement() -> &'static str;
+    /// Nom de la table de staging (reset défensif en cas d'échec de flush).
+    fn staging_table() -> &'static str;
+    /// Libellé court pour la journalisation.
+    fn label() -> &'static str;
+    /// Sérialise cet enregistrement en une ligne CSV (FORMAT csv PostgreSQL).
+    fn write_csv_row(&self, out: &mut String);
+}
 
-/// Compteurs d'observabilité (exposés via `/stats`, journalisés à chaque flush).
+/// Échappe une valeur texte au format CSV PostgreSQL (FORMAT csv : seul `"` est spécial, doublé).
+pub fn push_csv_quoted(out: &mut String, s: &str) {
+    out.push('"');
+    for c in s.chars() {
+        if c == '"' {
+            out.push('"');
+        }
+        out.push(c);
+    }
+    out.push('"');
+}
+
+/// Pousse un champ texte optionnel : `None` ⇒ champ vide non quoté ⇒ NULL côté COPY.
+pub fn push_csv_opt(out: &mut String, value: Option<&str>) {
+    if let Some(v) = value {
+        push_csv_quoted(out, v);
+    }
+}
+
+/// Compteurs d'observabilité d'un domaine (exposés via `/stats`, journalisés à chaque flush).
 #[derive(Default)]
 pub struct IngestMetrics {
-    /// Events acceptés pour écriture (enfilés). N'est pas le nombre d'insertions (cf. dédup).
+    /// Enregistrements acceptés pour écriture (enfilés). Pas le nombre d'insertions (cf. dédup).
     pub received_total: AtomicU64,
-    /// Events réellement insérés après déduplication.
+    /// Enregistrements réellement insérés après déduplication.
     pub inserted_total: AtomicU64,
-    /// Events écartés car hors fenêtre de skew (perte tolérée).
+    /// Enregistrements écartés car hors fenêtre de skew (perte tolérée).
     pub dropped_skew_total: AtomicU64,
-    /// Events perdus car la file était saturée (back-pressure, perte tolérée).
+    /// Enregistrements perdus car la file était saturée (back-pressure, perte tolérée).
     pub dropped_channel_full_total: AtomicU64,
     /// Flushes en échec (batch perdu).
     pub flush_failures_total: AtomicU64,
@@ -38,12 +71,12 @@ pub struct IngestMetrics {
 
 impl IngestMetrics {
     pub fn snapshot(&self) -> serde_json::Value {
+        let received = self.received_total.load(Ordering::Relaxed);
+        let inserted = self.inserted_total.load(Ordering::Relaxed);
         json!({
-            "received_total": self.received_total.load(Ordering::Relaxed),
-            "inserted_total": self.inserted_total.load(Ordering::Relaxed),
-            "deduplicated_total":
-                self.received_total.load(Ordering::Relaxed)
-                    .saturating_sub(self.inserted_total.load(Ordering::Relaxed)),
+            "received_total": received,
+            "inserted_total": inserted,
+            "deduplicated_total": received.saturating_sub(inserted),
             "dropped_skew_total": self.dropped_skew_total.load(Ordering::Relaxed),
             "dropped_channel_full_total": self.dropped_channel_full_total.load(Ordering::Relaxed),
             "flush_failures_total": self.flush_failures_total.load(Ordering::Relaxed),
@@ -52,17 +85,25 @@ impl IngestMetrics {
     }
 }
 
-/// Point d'entrée d'enfilage utilisé par le handler HTTP.
-#[derive(Clone)]
-pub struct Ingestor {
-    tx: mpsc::Sender<Vec<StoredEvent>>,
+/// Point d'entrée d'enfilage (utilisé par les handlers HTTP). Générique sur le type d'enregistrement.
+pub struct Ingestor<T: Ingestable> {
+    tx: mpsc::Sender<Vec<T>>,
     pub metrics: Arc<IngestMetrics>,
 }
 
-impl Ingestor {
-    /// Enfile un batch sans bloquer. Retourne le nombre d'events réellement enfilés
+impl<T: Ingestable> Clone for Ingestor<T> {
+    fn clone(&self) -> Self {
+        Self {
+            tx: self.tx.clone(),
+            metrics: Arc::clone(&self.metrics),
+        }
+    }
+}
+
+impl<T: Ingestable> Ingestor<T> {
+    /// Enfile un batch sans bloquer. Retourne le nombre d'enregistrements réellement enfilés
     /// (0 si la file est saturée → perte tolérée).
-    pub fn try_enqueue(&self, batch: Vec<StoredEvent>) -> usize {
+    pub fn try_enqueue(&self, batch: Vec<T>) -> usize {
         let n = batch.len();
         match self.tx.try_send(batch) {
             Ok(()) => {
@@ -81,7 +122,7 @@ impl Ingestor {
     }
 }
 
-/// Poignée d'arrêt propre du batcher.
+/// Poignée d'arrêt propre d'un batcher.
 pub struct BatcherHandle {
     shutdown_tx: watch::Sender<bool>,
     join: JoinHandle<()>,
@@ -95,36 +136,42 @@ impl BatcherHandle {
     }
 }
 
-/// Démarre la tâche de batching et retourne l'`Ingestor` + la poignée d'arrêt.
-pub fn spawn(pool: PgPool, cfg: &Config, metrics: Arc<IngestMetrics>) -> (Ingestor, BatcherHandle) {
-    let (tx, rx) = mpsc::channel(cfg.channel_capacity);
+/// Démarre la tâche de batching d'un domaine et retourne l'`Ingestor` + la poignée d'arrêt.
+pub fn spawn<T: Ingestable>(
+    pool: PgPool,
+    flush_interval: Duration,
+    flush_batch_size: usize,
+    channel_capacity: usize,
+    metrics: Arc<IngestMetrics>,
+) -> (Ingestor<T>, BatcherHandle) {
+    let (tx, rx) = mpsc::channel(channel_capacity);
     let (shutdown_tx, shutdown_rx) = watch::channel(false);
 
     let ingestor = Ingestor {
         tx,
         metrics: Arc::clone(&metrics),
     };
-    let join = tokio::spawn(batcher_loop(
+    let join = tokio::spawn(batcher_loop::<T>(
         pool,
         rx,
         shutdown_rx,
         metrics,
-        cfg.flush_interval,
-        cfg.flush_batch_size,
+        flush_interval,
+        flush_batch_size,
     ));
 
     (ingestor, BatcherHandle { shutdown_tx, join })
 }
 
-async fn batcher_loop(
+async fn batcher_loop<T: Ingestable>(
     pool: PgPool,
-    mut rx: mpsc::Receiver<Vec<StoredEvent>>,
+    mut rx: mpsc::Receiver<Vec<T>>,
     mut shutdown_rx: watch::Receiver<bool>,
     metrics: Arc<IngestMetrics>,
-    flush_interval: std::time::Duration,
+    flush_interval: Duration,
     flush_batch_size: usize,
 ) {
-    let mut buf: Vec<StoredEvent> = Vec::with_capacity(flush_batch_size);
+    let mut buf: Vec<T> = Vec::with_capacity(flush_batch_size);
     let mut ticker = tokio::time::interval(flush_interval);
     ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
 
@@ -161,10 +208,10 @@ async fn batcher_loop(
             }
         }
     }
-    tracing::info!("batcher arrêté proprement");
+    tracing::info!(domain = T::label(), "batcher arrêté proprement");
 }
 
-async fn flush(pool: &PgPool, buf: &mut Vec<StoredEvent>, metrics: &IngestMetrics) {
+async fn flush<T: Ingestable>(pool: &PgPool, buf: &mut Vec<T>, metrics: &IngestMetrics) {
     if buf.is_empty() {
         return;
     }
@@ -175,13 +222,15 @@ async fn flush(pool: &PgPool, buf: &mut Vec<StoredEvent>, metrics: &IngestMetric
                 .inserted_total
                 .fetch_add(inserted, Ordering::Relaxed);
             metrics.flushes_total.fetch_add(1, Ordering::Relaxed);
-            tracing::debug!(events = n, inserted, "flush écrit");
+            tracing::debug!(domain = T::label(), records = n, inserted, "flush écrit");
         }
         Err(e) => {
             metrics.flush_failures_total.fetch_add(1, Ordering::Relaxed);
-            tracing::error!(error = %e, events = n, "échec du flush — batch perdu (tolérance §2)");
+            tracing::error!(domain = T::label(), error = %e, records = n, "échec du flush — batch perdu (tolérance §2)");
             // Reset défensif du staging pour éviter un poison-loop.
-            let _ = sqlx::query("TRUNCATE events_staging").execute(pool).await;
+            let _ = sqlx::query(&format!("TRUNCATE {}", T::staging_table()))
+                .execute(pool)
+                .await;
         }
     }
     buf.clear();
@@ -189,125 +238,26 @@ async fn flush(pool: &PgPool, buf: &mut Vec<StoredEvent>, metrics: &IngestMetric
 
 /// COPY du micro-batch dans le staging, garantie des partitions, merge idempotent.
 /// Retourne le nombre de lignes réellement insérées (après déduplication).
-async fn flush_inner(pool: &PgPool, buf: &[StoredEvent]) -> Result<u64> {
+async fn flush_inner<T: Ingestable>(pool: &PgPool, buf: &[T]) -> Result<u64> {
     let mut conn = pool.acquire().await?;
 
     let mut csv = String::with_capacity(buf.len() * 160);
-    for e in buf {
-        write_csv_row(&mut csv, e)?;
+    for r in buf {
+        r.write_csv_row(&mut csv);
     }
 
     {
-        let mut copy = conn
-            .copy_in_raw(
-                "COPY events_staging \
-                 (event_id, event_name, tenant_id, actor_id, session_id, \
-                  timestamp_client, received_at, properties) \
-                 FROM STDIN WITH (FORMAT csv)",
-            )
-            .await?;
+        let mut copy = conn.copy_in_raw(T::copy_statement()).await?;
         copy.send(csv.as_bytes()).await?;
         copy.finish().await?;
     }
 
-    sqlx::query("SELECT datacat_ensure_partitions_for_staging()")
+    sqlx::query(T::ensure_partitions_statement())
         .execute(&mut *conn)
         .await?;
-    let inserted: i64 = sqlx::query_scalar("SELECT datacat_merge_staging()")
+    let inserted: i64 = sqlx::query_scalar(T::merge_statement())
         .fetch_one(&mut *conn)
         .await?;
 
     Ok(inserted.max(0) as u64)
-}
-
-/// Écrit une ligne au format CSV PostgreSQL (FORMAT csv : seul `"` est spécial, doublé).
-fn write_csv_row(out: &mut String, e: &StoredEvent) -> Result<()> {
-    out.push_str(&e.event_id.to_string());
-    out.push(',');
-    push_csv_quoted(out, &e.event_name);
-    out.push(',');
-    if let Some(t) = &e.tenant_id {
-        push_csv_quoted(out, t); // None ⇒ champ vide non quoté ⇒ NULL
-    }
-    out.push(',');
-    push_csv_quoted(out, &e.actor_id);
-    out.push(',');
-    push_csv_quoted(out, &e.session_id);
-    out.push(',');
-    out.push_str(&e.timestamp_client.to_rfc3339());
-    out.push(',');
-    out.push_str(&e.received_at.to_rfc3339());
-    out.push(',');
-    let props = serde_json::to_string(&e.properties)?;
-    push_csv_quoted(out, &props);
-    out.push('\n');
-    Ok(())
-}
-
-fn push_csv_quoted(out: &mut String, s: &str) {
-    out.push('"');
-    for c in s.chars() {
-        if c == '"' {
-            out.push('"');
-        }
-        out.push(c);
-    }
-    out.push('"');
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use chrono::{TimeZone, Utc};
-    use uuid::Uuid;
-
-    fn ev(name: &str, props: serde_json::Value, tenant: Option<&str>) -> StoredEvent {
-        let ts = Utc.with_ymd_and_hms(2026, 6, 21, 10, 0, 0).unwrap();
-        StoredEvent {
-            event_id: Uuid::nil(),
-            event_name: name.to_string(),
-            tenant_id: tenant.map(|s| s.to_string()),
-            actor_id: "actor-1".to_string(),
-            session_id: "sess-1".to_string(),
-            timestamp_client: ts,
-            received_at: ts,
-            properties: props,
-        }
-    }
-
-    #[test]
-    fn csv_escapes_quotes_and_commas() {
-        let mut out = String::new();
-        write_csv_row(
-            &mut out,
-            &ev("na\"me,with", json!({"a": "x,y\"z"}), Some("t1")),
-        )
-        .unwrap();
-        // Le nom contenant guillemet+virgule est quoté et le `"` est doublé.
-        assert!(out.contains("\"na\"\"me,with\""), "got: {out}");
-        assert!(out.ends_with('\n'));
-
-        // Round-trip : ré-appliquer les règles CSV PostgreSQL (FORMAT csv) doit redonner
-        // exactement le JSON sérialisé d'origine.
-        let json_str = serde_json::to_string(&json!({"a": "x,y\"z"})).unwrap();
-        let mut quoted = String::new();
-        push_csv_quoted(&mut quoted, &json_str);
-        // Désquote : retire les guillemets externes, dédouble les `"` internes.
-        let inner = &quoted[1..quoted.len() - 1];
-        let unquoted = inner.replace("\"\"", "\"");
-        assert_eq!(unquoted, json_str);
-        assert_eq!(
-            serde_json::from_str::<serde_json::Value>(&unquoted).unwrap(),
-            json!({"a": "x,y\"z"})
-        );
-    }
-
-    #[test]
-    fn csv_null_tenant_is_empty_field() {
-        let mut out = String::new();
-        write_csv_row(&mut out, &ev("click", json!({}), None)).unwrap();
-        // event_id,"event_name",,"actor"... → tenant vide entre deux virgules.
-        let fields: Vec<&str> = out.trim_end().splitn(4, ',').collect();
-        assert_eq!(fields[2], ""); // tenant_id NULL
-    }
 }

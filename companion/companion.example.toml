@@ -1,0 +1,36 @@
+# Datacat companion agent — example configuration.
+#
+# Copy to `companion.toml` (gitignored) or point $DATACAT_COMPANION_CONFIG at this file.
+# Every string supports ${VAR} / ${VAR:-default} expansion so secrets stay out of the file.
+# Resolution order: $DATACAT_COMPANION_CONFIG, then ./companion.toml.
+
+# Base URL of the Datacat main instance (no trailing path; a trailing slash is trimmed).
+main_url = "https://datacat.example.com"
+
+# Stable identifier of this companion node. Must match a [[companions.expected]].id on main.
+id = "edge-eu-west-1"
+
+# Service-to-service heartbeat token, sent as `Authorization: Bearer <token>`.
+# Keep the secret in the environment; this default reads $DATACAT_HEARTBEAT_TOKEN.
+token = "${DATACAT_HEARTBEAT_TOKEN}"
+
+# Interval between heartbeats (ms / s / m / h / d). Default: 30s.
+interval = "30s"
+
+# Consecutive failed heartbeats before raising the self-alert. Default: 3.
+failure_threshold = 3
+
+# Exactly ONE self-alert channel must be configured below. This is the alert the companion raises
+# itself when it cannot reach main — because a down main cannot alert about itself.
+
+# Option A — Slack (Web API chat.postMessage with a bot token):
+[alert.slack]
+bot_token = "${SLACK_BOT_TOKEN}"
+channel = "#alerts"
+
+# Option B — generic JSON webhook. POSTs {"id","state":"firing"|"resolved","text"}.
+# Uncomment to use instead of [alert.slack] (do not configure both).
+# [alert.webhook]
+# url = "https://hooks.example.com/datacat-companion"
+# [alert.webhook.headers]
+# X-Auth-Token = "${WEBHOOK_TOKEN}"

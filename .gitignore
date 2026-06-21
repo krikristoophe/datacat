@@ -14,6 +14,8 @@
 /datacat.toml
 /projects/*.toml
 !/projects/example.toml
+# Companion agent real config (secrets via ${ENV}); the *.example.toml template is versioned.
+/companion/companion.toml
 
 # Site de doc (Astro Starlight)
 website/node_modules/

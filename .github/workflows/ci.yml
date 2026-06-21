@@ -121,6 +121,27 @@ jobs:
       # Il s'exécute en local via reader/run-tests.sh.
       # En CI on ne le lance pas pour garder un job rapide sans dépendances Docker.
 
+  companion:
+    name: Companion (Rust — build + clippy + fmt)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: companion
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: companion -> target
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Build
+        run: cargo build --release
+
   audit:
     name: Audit des dépendances (RustSec)
     runs-on: ubuntu-latest
@@ -130,7 +151,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      - name: Audit (cargo-audit) — backend, exporter, reader
+      - name: Audit (cargo-audit) — backend, exporter, reader, companion
         # RUSTSEC-2023-0071 (rsa — Marvin timing attack) est ignoré avec justification :
         #  - le crate `rsa` n'est tiré QUE comme dépendance optionnelle NON COMPILÉE du méta-crate
         #    `sqlx` (backend MySQL, non activé : default-features=false, features=["postgres",…]).
@@ -146,6 +167,7 @@ jobs:
           cargo audit --ignore RUSTSEC-2023-0071 --file Cargo.lock
           cargo audit --ignore RUSTSEC-2023-0071 --file exporter/Cargo.lock
           cargo audit --ignore RUSTSEC-2023-0071 --file reader/Cargo.lock
+          cargo audit --ignore RUSTSEC-2023-0071 --file companion/Cargo.lock
 
   deny:
     name: Supply chain (cargo-deny)
@@ -157,16 +179,17 @@ jobs:
         with:
           tool: cargo-deny
       # Politique unique `deny.toml` (advisories + licenses + sources + bans), appliquée au
-      # workspace racine (backend + exporter via dep path) puis au crate `reader` autonome.
-      # Code de sortie cargo-deny = champ de bits : bit 0 = ERREURS, bit 1 = warnings. On échoue
-      # uniquement sur les erreurs (les avis informationnels — DB d'avis fraîche en CI — ne
-      # doivent pas casser le build).
-      - name: cargo-deny (root + reader)
+      # workspace racine (backend + exporter via dep path) puis aux crates autonomes `reader` et
+      # `companion`. Code de sortie cargo-deny = champ de bits : bit 0 = ERREURS, bit 1 = warnings.
+      # On échoue uniquement sur les erreurs (les avis informationnels — DB d'avis fraîche en CI —
+      # ne doivent pas casser le build).
+      - name: cargo-deny (root + reader + companion)
         run: |
           set +e
           cargo deny check; r=$?
           cargo deny --manifest-path reader/Cargo.toml check --config deny.toml; rr=$?
-          if [ $((r & 1)) -ne 0 ] || [ $((rr & 1)) -ne 0 ]; then
+          cargo deny --manifest-path companion/Cargo.toml check --config deny.toml; rc=$?
+          if [ $((r & 1)) -ne 0 ] || [ $((rr & 1)) -ne 0 ] || [ $((rc & 1)) -ne 0 ]; then
             echo "cargo-deny reported errors"; exit 1
           fi
           echo "cargo-deny: no errors (warnings tolerated)"

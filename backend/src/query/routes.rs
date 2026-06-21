@@ -7,9 +7,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 
 use crate::error::{AppError, AppResult};
-use crate::query::engine::{
-    self, EventsParams, JourneysParams, LogsParams, MetricsParams, SqlParams,
-};
+use crate::query::engine::{self, EventsParams, JourneysParams, LogsParams, MetricsParams};
 use crate::security::check_service_token;
 use crate::AppState;
 
@@ -79,23 +77,4 @@ pub async fn query_trace(
 ) -> AppResult<impl IntoResponse> {
     authorize_query(&state, &headers)?;
     Ok(Json(engine::get_trace(&state.pool, &trace_id).await?))
-}
-
-pub async fn query_sql(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(p): Json<SqlParams>,
-) -> AppResult<impl IntoResponse> {
-    authorize_query(&state, &headers)?;
-    let cfg = &state.config;
-    Ok(Json(
-        engine::run_read_sql(
-            &state.pool,
-            cfg.query_sql_enabled,
-            cfg.query_sql_timeout,
-            cfg.query_sql_max_rows,
-            &p,
-        )
-        .await?,
-    ))
 }

@@ -88,10 +88,10 @@ pub enum Source {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Action {
-    /// Message Slack. `webhook_url` optionnel : sinon `SLACK_WEBHOOK_URL` global.
+    /// Message Slack via le bot configuré. `channel` optionnel : sinon le canal par défaut du bot.
     Slack {
         #[serde(default)]
-        webhook_url: Option<String>,
+        channel: Option<String>,
     },
     /// E-mail. `to` optionnel : sinon `ALERT_EMAIL_TO` global.
     Email {

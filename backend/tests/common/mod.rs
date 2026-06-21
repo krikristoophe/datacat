@@ -127,15 +127,13 @@ pub fn test_config(token: TokenConfig, tweak: impl FnOnce(&mut Config)) -> Confi
         logs_auth: LogsAuth::Jwt,
         // Lecture ouverte par défaut en test ; un test dédié surcharge en Static.
         query_auth: LogsAuth::None,
-        query_sql_enabled: true,
-        query_sql_timeout: Duration::from_secs(10),
-        query_sql_max_rows: 1_000,
         mcp_enabled: true,
         cors: CorsOrigins::Any,
         alerting: AlertingConfig {
             rules_file: None,
             eval_interval: Duration::from_secs(60),
-            slack_webhook_url: None,
+            slack_bot_token: None,
+            slack_channel: None,
             smtp_host: None,
             smtp_port: 587,
             smtp_username: None,

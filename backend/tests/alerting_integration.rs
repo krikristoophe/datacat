@@ -162,7 +162,7 @@ async fn insert_span(
     .unwrap();
 }
 
-// ── Mock Slack (serveur axum local capturant le webhook) ──────────────────────
+// ── Mock Slack Web API (chat.postMessage) ─────────────────────────────────────
 
 #[derive(Clone, Default)]
 struct SlackMockState {
@@ -172,24 +172,25 @@ struct SlackMockState {
 async fn slack_mock_handler(
     State(state): State<SlackMockState>,
     Json(body): Json<Value>,
-) -> &'static str {
+) -> Json<Value> {
     state.received.lock().unwrap().push(body);
-    "ok"
+    // Slack répond toujours 200 avec un corps `{ "ok": true|false }`.
+    Json(serde_json::json!({ "ok": true }))
 }
 
-/// Démarre un mock Slack ; retourne (url du webhook, payloads reçus).
+/// Démarre un mock Slack `chat.postMessage` ; retourne (url de l'API, payloads reçus).
 async fn start_slack_mock() -> (String, Arc<Mutex<Vec<Value>>>) {
     let state = SlackMockState::default();
     let received = Arc::clone(&state.received);
     let app = Router::new()
-        .route("/webhook", post(slack_mock_handler))
+        .route("/api/chat.postMessage", post(slack_mock_handler))
         .with_state(state);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         axum::serve(listener, app).await.unwrap();
     });
-    (format!("http://{addr}/webhook"), received)
+    (format!("http://{addr}/api/chat.postMessage"), received)
 }
 
 #[sqlx::test]
@@ -199,7 +200,7 @@ async fn metric_threshold_fires_slack(pool: PgPool) {
     insert_metric(&pool, "http.server.duration", "api", 700.0).await;
     insert_metric(&pool, "http.server.duration", "api", 900.0).await;
 
-    let (webhook_url, received) = start_slack_mock().await;
+    let (api_url, received) = start_slack_mock().await;
 
     let rules = parse_rules(
         r#"{ "rules": [
@@ -210,7 +211,12 @@ async fn metric_threshold_fires_slack(pool: PgPool) {
     )
     .unwrap();
 
-    let notifiers: Vec<Arc<dyn Notifier>> = vec![Arc::new(SlackNotifier::new(webhook_url))];
+    let notifiers: Vec<Arc<dyn Notifier>> = vec![Arc::new(SlackNotifier::with_url(
+        reqwest::Client::new(),
+        "xoxb-test-token".into(),
+        "#alerts".into(),
+        api_url,
+    ))];
     let dispatcher = Dispatcher::with_defaults(notifiers);
     let mut state = AlertEngineState::new();
 
@@ -221,8 +227,9 @@ async fn metric_threshold_fires_slack(pool: PgPool) {
     assert_eq!(
         payloads.len(),
         1,
-        "le mock Slack a reçu exactement un webhook"
+        "le mock Slack a reçu exactement un appel"
     );
+    assert_eq!(payloads[0]["channel"], "#alerts");
     let text = payloads[0]["text"].as_str().unwrap();
     assert!(text.contains("[FIRING]"), "{text}");
     assert!(text.contains("latence"), "{text}");
@@ -642,7 +649,10 @@ async fn metric_rule_is_tenant_isolated(pool: PgPool) {
 
     let (recorder, dispatcher, mut state) = recorder_setup();
     let n = evaluate_once(&pool, &rules, &mut state, &dispatcher, Utc::now()).await;
-    assert_eq!(n, 0, "isolation tenant : la métrique du tenant b ne doit pas déclencher");
+    assert_eq!(
+        n, 0,
+        "isolation tenant : la métrique du tenant b ne doit pas déclencher"
+    );
     assert!(recorder.alerts().is_empty());
 }
 

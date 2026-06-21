@@ -129,7 +129,8 @@ eval_interval = "60s"
 
 # Channel for this project (else fall back to the global [notifications]).
 [notifications.slack]
-webhook_url = "${API_SLACK_WEBHOOK_URL}"
+bot_token = "${API_SLACK_BOT_TOKEN}"
+channel = "#alerts"
 
 # 5 identical errors (grouped by message) -> webhook + Slack.
 [[alerting.rules]]
@@ -300,13 +301,13 @@ global `[notifications]`). Three action types:
 
 | Type | Fields | Behavior |
 |---|---|---|
-| `slack` | `webhook_url` (optional) | POST `{ "text": … }` to the webhook; otherwise the project/global Slack webhook |
+| `slack` | `channel` (optional) | Posts via the configured bot to `chat.postMessage`; `channel` overrides the configured channel. Reuses the project/global Slack bot token |
 | `email` | `to` (optional) | SMTP e-mail; `to` overrides the default recipients. Reuses the project/global SMTP config |
 | `webhook` | `url` (required), `headers` (optional) | POST of the JSON payload above, with arbitrary headers (e.g. `Authorization`) |
 
 A single rule may combine several actions (e.g. an internal webhook **and** Slack). A misconfigured
-action (e.g. `email` with no SMTP config, `slack` with no URL) is logged and then skipped, without
-failing the others.
+action (e.g. `email` with no SMTP config, `slack` with no bot token) is logged and then skipped,
+without failing the others.
 
 ### Notification channels (`[notifications.*]`)
 
@@ -317,7 +318,8 @@ serve as the fallback/base config for actions. Secrets are passed via `${ENV}` r
 ```toml
 # In a project file (projects/api.toml) — or globally in datacat.toml.
 [notifications.slack]
-webhook_url = "${SLACK_WEBHOOK_URL}"          # POST { "text": … }
+bot_token = "${SLACK_BOT_TOKEN}"               # Slack bot token (xoxb-…)
+channel = "#alerts"                            # target channel
 
 [notifications.email]
 smtp_host = "smtp.example.com"
@@ -327,6 +329,12 @@ password = "${SMTP_PASSWORD:-}"
 from = "Datacat <alerts@example.com>"
 to = ["ops@example.com"]
 ```
+
+Datacat sends Slack notifications through the **Slack Web API** (`chat.postMessage`), not legacy
+incoming webhooks. It POSTs to `https://slack.com/api/chat.postMessage` with
+`Authorization: Bearer <bot_token>` and a body `{ "channel": …, "text": … }`, then checks the `ok`
+field of the JSON response. The Slack bot needs the `chat:write` scope and must be **invited to the
+target channel**. The Slack channel is only enabled if both `bot_token` and `channel` are provided.
 
 The SMTP transport uses **STARTTLS via rustls** (no OpenSSL). The e-mail channel is only enabled if
 `smtp_host`, `from` and at least one `to` recipient are provided.
@@ -338,7 +346,7 @@ The SMTP transport uses **STARTTLS via rustls** (no OpenSSL). The e-mail channel
 | `[[alerting.rules]]` | `projects/*.toml` | the project's rules (enables its evaluator) |
 | `[alerting].eval_interval` | `projects/*.toml` | evaluation period (default `60s`) |
 | `[project].service` / `[project].tenant` | `projects/*.toml` | default rule filter for the project |
-| `[notifications.slack]` | project, else `datacat.toml` | Slack webhook |
+| `[notifications.slack]` | project, else `datacat.toml` | Slack bot token + channel |
 | `[notifications.email]` | project, else `datacat.toml` | SMTP relay + sender/recipients |
 | `[projects].dir` / `[projects].files` | `datacat.toml` | which project files to load |
 

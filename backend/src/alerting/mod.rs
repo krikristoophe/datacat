@@ -12,7 +12,7 @@ pub mod rules;
 pub use eval::{evaluate_once, run_eval_loop, AlertEngineState, RuleState};
 pub use notify::{
     Alert, AlertState, DispatchSettings, Dispatcher, EmailConfig, EmailNotifier, Notifier,
-    RecordingNotifier, SlackNotifier, WebhookNotifier,
+    RecordingNotifier, SlackBot, SlackNotifier, WebhookNotifier,
 };
 pub use rules::{
     load_rules, parse_rules, Action, Agg, BoolOp, Comparator, GroupExpr, Rule, RuleKind, Source,

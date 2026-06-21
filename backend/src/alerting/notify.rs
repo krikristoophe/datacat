@@ -87,24 +87,58 @@ pub trait Notifier: Send + Sync {
     async fn send(&self, alert: &Alert) -> Result<()>;
 }
 
-// ── Slack (webhook entrant) ───────────────────────────────────────────────────
+// ── Slack (Web API — bot token) ───────────────────────────────────────────────
 
-/// Poste `{ "text": ... }` sur un webhook entrant Slack.
+const SLACK_POST_MESSAGE_URL: &str = "https://slack.com/api/chat.postMessage";
+
+/// Slack bot credentials: a bot token (`xoxb-…`) and a default channel. Shared by the global and
+/// per-project notification config. The legacy incoming-webhook integration is no longer used.
+#[derive(Debug, Clone)]
+pub struct SlackBot {
+    pub token: String,
+    pub default_channel: String,
+}
+
+/// Posts to a Slack channel through the Web API (`chat.postMessage`) with a bot token.
 pub struct SlackNotifier {
     client: reqwest::Client,
-    webhook_url: String,
+    token: String,
+    channel: String,
+    api_url: String,
 }
 
 impl SlackNotifier {
-    pub fn new(webhook_url: String) -> Self {
-        Self::with_client(reqwest::Client::new(), webhook_url)
-    }
-    pub fn with_client(client: reqwest::Client, webhook_url: String) -> Self {
+    pub fn new(client: reqwest::Client, token: String, channel: String) -> Self {
         Self {
             client,
-            webhook_url,
+            token,
+            channel,
+            api_url: SLACK_POST_MESSAGE_URL.to_string(),
         }
     }
+
+    /// Same, with an overridable API URL (tests point this at a local mock).
+    pub fn with_url(
+        client: reqwest::Client,
+        token: String,
+        channel: String,
+        api_url: String,
+    ) -> Self {
+        Self {
+            client,
+            token,
+            channel,
+            api_url,
+        }
+    }
+}
+
+/// Minimal `chat.postMessage` response: Slack always returns HTTP 200, success is `{"ok": …}`.
+#[derive(serde::Deserialize)]
+struct SlackApiResponse {
+    ok: bool,
+    #[serde(default)]
+    error: Option<String>,
 }
 
 #[async_trait::async_trait]
@@ -112,13 +146,22 @@ impl Notifier for SlackNotifier {
     async fn send(&self, alert: &Alert) -> Result<()> {
         let resp = self
             .client
-            .post(&self.webhook_url)
-            .json(&serde_json::json!({ "text": alert.summary() }))
+            .post(&self.api_url)
+            .bearer_auth(&self.token)
+            .json(&serde_json::json!({ "channel": self.channel, "text": alert.summary() }))
             .send()
             .await
-            .context("POST du webhook Slack")?;
+            .context("POST Slack chat.postMessage")?;
         if !resp.status().is_success() {
-            anyhow::bail!("webhook Slack a répondu {}", resp.status());
+            anyhow::bail!("Slack a répondu HTTP {}", resp.status());
+        }
+        // Slack renvoie 200 même en cas d'échec applicatif : il faut lire `ok`.
+        let body: SlackApiResponse = resp.json().await.context("réponse Slack illisible")?;
+        if !body.ok {
+            anyhow::bail!(
+                "Slack chat.postMessage a échoué: {}",
+                body.error.as_deref().unwrap_or("erreur inconnue")
+            );
         }
         Ok(())
     }
@@ -238,13 +281,13 @@ impl Notifier for WebhookNotifier {
 
 // ── Dispatcher (actions modulables par règle) ─────────────────────────────────
 
-/// Réglages globaux servant de repli pour résoudre les `actions` d'une règle (un webhook Slack
-/// par défaut, une configuration SMTP de base). Le client HTTP est partagé entre tous les canaux.
+/// Réglages globaux servant de repli pour résoudre les `actions` d'une règle (bot Slack par
+/// défaut, configuration SMTP de base). Le client HTTP est partagé entre tous les canaux.
 #[derive(Clone, Default)]
 pub struct DispatchSettings {
     pub http: reqwest::Client,
-    /// Webhook Slack global (`SLACK_WEBHOOK_URL`) — repli des actions `slack` sans `webhook_url`.
-    pub slack_webhook_url: Option<String>,
+    /// Bot Slack global (token + canal par défaut) — repli des actions `slack`.
+    pub slack: Option<SlackBot>,
     /// Configuration SMTP de base — repli des actions `email` (le `to` peut être surchargé).
     pub email: Option<EmailConfig>,
 }
@@ -296,21 +339,22 @@ impl Dispatcher {
         out: &mut Vec<Arc<dyn Notifier>>,
     ) {
         match action {
-            Action::Slack { webhook_url } => {
-                match webhook_url
-                    .clone()
-                    .or_else(|| settings.slack_webhook_url.clone())
-                {
-                    Some(url) => out.push(Arc::new(SlackNotifier::with_client(
+            Action::Slack { channel } => match &settings.slack {
+                Some(bot) => {
+                    let chan = channel
+                        .clone()
+                        .unwrap_or_else(|| bot.default_channel.clone());
+                    out.push(Arc::new(SlackNotifier::new(
                         settings.http.clone(),
-                        url,
-                    ))),
-                    None => tracing::warn!(
-                        rule = %rule_name,
-                        "action slack sans webhook_url ni SLACK_WEBHOOK_URL — ignorée"
-                    ),
+                        bot.token.clone(),
+                        chan,
+                    )));
                 }
-            }
+                None => tracing::warn!(
+                    rule = %rule_name,
+                    "action slack mais aucun bot Slack configuré (bot_token) — ignorée"
+                ),
+            },
             Action::Email { to } => match &settings.email {
                 Some(base) => {
                     let mut cfg = base.clone();

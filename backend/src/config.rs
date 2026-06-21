@@ -88,8 +88,10 @@ pub struct AlertingConfig {
     pub rules_file: Option<String>,
     /// Intervalle entre deux évaluations (`ALERT_EVAL_INTERVAL`, défaut 60s).
     pub eval_interval: Duration,
-    /// Webhook Slack (`SLACK_WEBHOOK_URL`).
-    pub slack_webhook_url: Option<String>,
+    /// Slack bot token (`SLACK_BOT_TOKEN`, `xoxb-…`) — Web API `chat.postMessage`.
+    pub slack_bot_token: Option<String>,
+    /// Slack default channel (`SLACK_CHANNEL`, e.g. `#alerts`).
+    pub slack_channel: Option<String>,
     /// Hôte SMTP (`SMTP_HOST`).
     pub smtp_host: Option<String>,
     pub smtp_port: u16,
@@ -113,7 +115,10 @@ impl AlertingConfig {
                 .ok()
                 .filter(|s| !s.is_empty()),
             eval_interval: env_duration("ALERT_EVAL_INTERVAL", Duration::from_secs(60))?,
-            slack_webhook_url: std::env::var("SLACK_WEBHOOK_URL")
+            slack_bot_token: std::env::var("SLACK_BOT_TOKEN")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            slack_channel: std::env::var("SLACK_CHANNEL")
                 .ok()
                 .filter(|s| !s.is_empty()),
             smtp_host: std::env::var("SMTP_HOST").ok().filter(|s| !s.is_empty()),
@@ -131,9 +136,9 @@ impl AlertingConfig {
         })
     }
 
-    /// Au moins un canal de notification est-il configuré (Slack ou e-mail complet) ?
+    /// Au moins un canal de notification est-il configuré (Slack bot ou e-mail complet) ?
     pub fn has_notifier(&self) -> bool {
-        self.slack_webhook_url.is_some()
+        (self.slack_bot_token.is_some() && self.slack_channel.is_some())
             || (self.smtp_host.is_some() && self.email_from.is_some() && !self.email_to.is_empty())
     }
 }
@@ -170,12 +175,6 @@ pub struct Config {
     pub logs_auth: LogsAuth,
     /// Auth des endpoints de lecture (`/v1/query/*`).
     pub query_auth: LogsAuth,
-    /// Endpoint SQL lecture seule (`/v1/query/sql`) activé ? Défaut false.
-    pub query_sql_enabled: bool,
-    /// Timeout d'une requête SQL ad-hoc.
-    pub query_sql_timeout: Duration,
-    /// Nombre max de lignes renvoyées par une requête SQL ad-hoc.
-    pub query_sql_max_rows: i64,
     /// Serveur MCP HTTP (`/mcp`) activé ? Défaut true.
     pub mcp_enabled: bool,
     pub cors: CorsOrigins,
@@ -296,9 +295,6 @@ impl Config {
             token,
             logs_auth,
             query_auth,
-            query_sql_enabled: env_bool("QUERY_SQL_ENABLED", false)?,
-            query_sql_timeout: env_duration("QUERY_SQL_TIMEOUT", Duration::from_secs(10))?,
-            query_sql_max_rows: env_parse("QUERY_SQL_MAX_ROWS", 1_000)?,
             mcp_enabled: env_bool("MCP_ENABLED", true)?,
             cors,
             alerting: AlertingConfig::from_env()?,

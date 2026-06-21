@@ -296,8 +296,8 @@ fn spawn_project_alerting(
     }
     // Une règle peut porter ses propres `actions` : l'alerting reste utile sans canal global.
     let has_actions = project.rules.iter().any(|r| !r.actions.is_empty());
-    let has_channel = project.slack_webhook_url.is_some()
-        || project.email.as_ref().is_some_and(|e| !e.to.is_empty());
+    let has_channel =
+        project.slack.is_some() || project.email.as_ref().is_some_and(|e| !e.to.is_empty());
     if !has_channel && !has_actions {
         tracing::warn!(project = %project.id, "règles présentes mais aucun canal ni action — alerting du projet désactivé");
         return;
@@ -307,8 +307,12 @@ fn spawn_project_alerting(
     let http = reqwest::Client::new();
 
     let mut default: Vec<Arc<dyn Notifier>> = Vec::new();
-    if let Some(url) = project.slack_webhook_url.clone() {
-        default.push(Arc::new(SlackNotifier::with_client(http.clone(), url)));
+    if let Some(bot) = &project.slack {
+        default.push(Arc::new(SlackNotifier::new(
+            http.clone(),
+            bot.token.clone(),
+            bot.default_channel.clone(),
+        )));
     }
     if let Some(email) = &project.email {
         if !email.to.is_empty() {
@@ -323,7 +327,7 @@ fn spawn_project_alerting(
 
     let settings = DispatchSettings {
         http,
-        slack_webhook_url: project.slack_webhook_url.clone(),
+        slack: project.slack.clone(),
         email: project.email.clone(),
     };
     let dispatcher = Dispatcher::build(&project.rules, &settings, default);

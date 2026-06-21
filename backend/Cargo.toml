@@ -5,6 +5,7 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 description = "Datacat — API d'ingestion d'events (Axum + PostgreSQL)"
+publish = false
 
 [lib]
 name = "datacat_ingest"

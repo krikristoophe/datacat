@@ -130,7 +130,7 @@ jobs:
       - uses: taiki-e/install-action@v2
         with:
           tool: cargo-audit
-      - name: Audit (cargo-audit)
+      - name: Audit (cargo-audit) — backend, exporter, reader
         # RUSTSEC-2023-0071 (rsa — Marvin timing attack) est ignoré avec justification :
         #  - le crate `rsa` n'est tiré QUE comme dépendance optionnelle NON COMPILÉE du méta-crate
         #    `sqlx` (backend MySQL, non activé : default-features=false, features=["postgres",…]).
@@ -142,4 +142,21 @@ jobs:
         # Avis sans correctif disponible (cf. RUSTSEC-2023-0071). À revoir si `rsa` entre un jour
         # dans le graphe de build. Les avis informationnels (unmaintained/unsound) sont signalés
         # mais ne font pas échouer le job (comportement par défaut de cargo-audit).
-        run: cargo audit --ignore RUSTSEC-2023-0071
+        run: |
+          cargo audit --ignore RUSTSEC-2023-0071 --file Cargo.lock
+          cargo audit --ignore RUSTSEC-2023-0071 --file exporter/Cargo.lock
+          cargo audit --ignore RUSTSEC-2023-0071 --file reader/Cargo.lock
+
+  deny:
+    name: Supply chain (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      # Politique unique `deny.toml` (advisories + licenses + sources + bans), appliquée au
+      # workspace racine (backend + exporter via dep path) puis au crate `reader` autonome.
+      - run: cargo deny check
+      - run: cargo deny --manifest-path reader/Cargo.toml --config deny.toml check

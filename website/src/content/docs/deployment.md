@@ -43,7 +43,6 @@ The main sections:
 | `[ingest]` | micro-batch (`flush_interval`, `flush_batch_size`, `channel_capacity`), `retention_days`, `partition_future_days`; `[ingest.limits]`, `[ingest.rate_limit]`, `[ingest.anomaly]` |
 | `[token]` | asymmetric token verification (public key only): `enabled`, `algorithms`, key source (`jwks_url` \| `public_key_pem` \| `public_key_file`), `alg`, `issuer`, `audience` |
 | `[auth.logs]` / `[auth.query]` | service-to-service auth for telemetry ingestion and read endpoints: `mode` (`auto`\|`static`\|`jwt`\|`none`) + `static_token` |
-| `[query.sql]` | read-only ad-hoc SQL endpoint (`enabled`, `timeout`, `max_rows`) |
 | `[mcp]` | embedded MCP HTTP server (`enabled`) |
 | `[export]` | embedded scheduled cold export (see §10) |
 | `[notifications]` | global default Slack / e-mail channels (fallback for projects) |

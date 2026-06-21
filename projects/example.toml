@@ -12,8 +12,10 @@ service = "api"          # filtre `service` par défaut des règles
 eval_interval = "60s"
 
 # Canaux du projet (sinon repli sur [notifications] global de datacat.toml).
+# Slack via l'API Web : bot token (xoxb-…) + canal par défaut.
 [notifications.slack]
-webhook_url = "${EXAMPLE_SLACK_WEBHOOK_URL:-}"
+bot_token = "${EXAMPLE_SLACK_BOT_TOKEN:-}"
+channel = "#alerts"
 
 # Taux d'erreur > 5 % sur ≥ 50 logs.
 [[alerting.rules]]

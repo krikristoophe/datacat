@@ -1,0 +1,54 @@
+# cargo-deny supply-chain policy (advisories + licenses + sources + bans).
+# Applied in CI to the root workspace (backend + exporter) and to the `reader` crate.
+
+[advisories]
+version = 2
+# Only flag "unmaintained" advisories for direct workspace crates, not transitive ones — e.g.
+# `paste` (RUSTSEC-2024-0436), pulled compile-time-only via arrow/parquet, has no fix and no
+# runtime/security impact.
+unmaintained = "workspace"
+# RUSTSEC-2023-0071 (rsa — Marvin timing attack): `rsa` is only an UNCOMPILED optional dependency
+# of the sqlx MySQL backend (not enabled; `cargo tree -i rsa` is empty), and Datacat performs only
+# public-key token verification (no RSA private-key operation). No exploitable path; no fix exists.
+ignore = ["RUSTSEC-2023-0071"]
+
+[licenses]
+version = 2
+# Our own workspace crates are "Proprietary" (not a valid SPDX expression) — ignore them.
+private = { ignore = true }
+# Permissive licenses accepted across the dependency tree.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "0BSD",
+    "ISC",
+    "Zlib",
+    "Unicode-DFS-2016",
+    "Unicode-3.0",
+    "CC0-1.0",
+    "CDLA-Permissive-2.0",
+    "MPL-2.0",
+    "OpenSSL",
+    "bzip2-1.0.6",
+]
+confidence-threshold = 0.8
+
+# `ring` ships a custom (non-SPDX) license file; clarify its effective expression.
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+# Multiple versions of the same crate are common in large trees — warn, don't fail.
+multiple-versions = "warn"
+wildcards = "warn"
+
+[sources]
+# Only crates.io is allowed as a source; deny unknown registries and git dependencies.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

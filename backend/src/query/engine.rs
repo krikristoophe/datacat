@@ -10,7 +10,6 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sqlx::{FromRow, PgPool, Postgres, QueryBuilder};
-use std::time::Duration;
 
 use crate::error::AppError;
 
@@ -273,66 +272,4 @@ pub async fn search_metrics(pool: &PgPool, p: &MetricsParams) -> Result<Value, A
     qb.push(" ORDER BY time DESC LIMIT ").push_bind(limit);
     let rows: Vec<MetricRow> = qb.build_query_as().fetch_all(pool).await.map_err(db_err)?;
     Ok(json!({ "metrics": rows }))
-}
-
-// ── SQL ad-hoc (lecture seule) ────────────────────────────────────────────────
-
-#[derive(Debug, Default, Deserialize, JsonSchema)]
-pub struct SqlParams {
-    /// Requête SELECT/WITH (instruction unique, sans ';').
-    pub sql: String,
-    pub limit: Option<i64>,
-}
-
-/// Exécute un `SELECT`/`WITH` en lecture seule (transaction READ ONLY + timeout, encapsulation
-/// `to_jsonb(...) LIMIT n`). Voir docs/read-hot.md pour les garde-fous.
-pub async fn run_read_sql(
-    pool: &PgPool,
-    enabled: bool,
-    timeout: Duration,
-    max_rows: i64,
-    p: &SqlParams,
-) -> Result<Value, AppError> {
-    if !enabled {
-        return Err(AppError::Forbidden(
-            "endpoint SQL lecture seule désactivé (QUERY_SQL_ENABLED)".into(),
-        ));
-    }
-    let sql = p.sql.trim().trim_end_matches(';').trim();
-    let lowered = sql.to_ascii_lowercase();
-    if !(lowered.starts_with("select") || lowered.starts_with("with")) {
-        return Err(AppError::bad_request(
-            "seules les requêtes SELECT/WITH sont autorisées",
-        ));
-    }
-    if sql.contains(';') {
-        return Err(AppError::bad_request(
-            "requête unique : le caractère ';' est interdit",
-        ));
-    }
-    let limit = clamp_limit(p.limit, max_rows, max_rows);
-    let timeout_ms = timeout.as_millis() as i64;
-    let wrapped = format!("SELECT to_jsonb(t) FROM ({sql}) AS t LIMIT {}", limit + 1);
-
-    let mut tx = pool.begin().await.map_err(db_err)?;
-    sqlx::query("SET TRANSACTION READ ONLY")
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?;
-    sqlx::query(&format!("SET LOCAL statement_timeout = {timeout_ms}"))
-        .execute(&mut *tx)
-        .await
-        .map_err(db_err)?;
-    let result = sqlx::query_scalar::<_, Value>(&wrapped)
-        .fetch_all(&mut *tx)
-        .await;
-    let _ = tx.rollback().await;
-
-    let mut rows = result.map_err(|e| match e {
-        sqlx::Error::Database(db) => AppError::bad_request(format!("erreur SQL: {}", db.message())),
-        other => AppError::Internal(other.into()),
-    })?;
-    let truncated = rows.len() as i64 > limit;
-    rows.truncate(limit as usize);
-    Ok(json!({ "row_count": rows.len(), "truncated": truncated, "rows": rows }))
 }

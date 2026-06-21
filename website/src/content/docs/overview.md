@@ -26,7 +26,7 @@ description: "Index of the Datacat documentation: contract, architecture, integr
 ## Reading & operations
 | Document | Contents |
 |---|---|
-| [Hot reads](../read-hot/) | **Hot** read layer (`/v1/query/*`, read-only SQL). |
+| [Hot reads](../read-hot/) | **Hot** read layer (`/v1/query/*`). |
 | [Cold reads](../read-cold/) | **Cold** reads (DataFusion over Parquet on S3). |
 | [Cold storage](../cold-storage/) | Cold export PostgreSQL → Parquet on S3 (Iceberg-friendly). |
 | [MCP](../mcp/) | **MCP** server: read access for an agent (Claude) — debug, exploration, correlation. |

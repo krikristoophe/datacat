@@ -7,6 +7,7 @@ edition = "2021"
 license = "Proprietary"
 rust-version = "1.80"
 description = "Datacat — export périodique PostgreSQL → Parquet sur Object Storage S3-compatible"
+publish = false
 
 [[bin]]
 name = "datacat-export"

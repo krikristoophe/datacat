@@ -55,7 +55,6 @@ pub fn build_router(state: AppState) -> Router {
             "/v1/query/journeys",
             get(crate::query::routes::query_journeys),
         )
-        .route("/v1/query/sql", post(crate::query::routes::query_sql))
         .merge(otlp_routes)
         .layer(
             ServiceBuilder::new()

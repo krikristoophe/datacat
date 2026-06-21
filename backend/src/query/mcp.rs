@@ -13,9 +13,7 @@ use rmcp::{tool, tool_handler, tool_router, ErrorData, ServerHandler};
 use serde_json::{json, Value};
 
 use crate::error::AppError;
-use crate::query::engine::{
-    self, EventsParams, JourneysParams, LogsParams, MetricsParams, SqlParams,
-};
+use crate::query::engine::{self, EventsParams, JourneysParams, LogsParams, MetricsParams};
 use crate::AppState;
 
 /// Serveur MCP adossé à l'`AppState` (accès lecture).
@@ -136,27 +134,6 @@ impl DatacatMcp {
     }
 
     #[tool(
-        description = "Exécute une requête SQL EN LECTURE SEULE (SELECT/WITH, instruction unique) sur events/logs/spans/metric_points — pour de l'analyse ad-hoc (agrégats, corrélation). Nécessite QUERY_SQL_ENABLED côté serveur."
-    )]
-    async fn run_read_sql(
-        &self,
-        Parameters(p): Parameters<SqlParams>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let c = &self.state.config;
-        Self::ok(
-            engine::run_read_sql(
-                &self.state.pool,
-                c.query_sql_enabled,
-                c.query_sql_timeout,
-                c.query_sql_max_rows,
-                &p,
-            )
-            .await
-            .map_err(to_err)?,
-        )
-    }
-
-    #[tool(
         description = "Statistiques d'ingestion par domaine (events, logs, traces, metrics) : volumes reçus/insérés, déduplication, pertes."
     )]
     async fn ingest_stats(
@@ -212,11 +189,10 @@ mod tests {
             "search_events",
             "frequent_journeys",
             "search_metrics",
-            "run_read_sql",
             "ingest_stats",
         ] {
             assert!(router.has_route(name), "outil MCP manquant: {name}");
         }
-        assert_eq!(router.list_all().len(), 7);
+        assert_eq!(router.list_all().len(), 6);
     }
 }

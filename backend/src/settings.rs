@@ -15,7 +15,7 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
-use crate::alerting::{EmailConfig, Rule};
+use crate::alerting::{EmailConfig, Rule, SlackBot};
 use crate::config::{
     parse_alg, parse_duration, AlertingConfig, AnomalyConfig, Config, CorsOrigins, KeySource,
     LogsAuth, RateLimitConfig, TokenConfig, ValidationLimits,
@@ -37,8 +37,8 @@ pub struct Project {
     pub name: String,
     pub eval_interval: Duration,
     pub rules: Vec<Rule>,
-    /// Webhook Slack du projet (repli sur le global si absent).
-    pub slack_webhook_url: Option<String>,
+    /// Bot Slack du projet (repli sur le global si absent).
+    pub slack: Option<SlackBot>,
     /// Config e-mail du projet (repli sur le global si absent).
     pub email: Option<EmailConfig>,
 }
@@ -203,7 +203,6 @@ struct FileConfig {
     ingest: IngestSection,
     token: TokenSection,
     auth: AuthSection,
-    query: QuerySection,
     mcp: McpSection,
     export: Option<ExportSection>,
     notifications: NotificationsSection,
@@ -426,29 +425,6 @@ impl Default for AuthEntry {
     }
 }
 
-#[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct QuerySection {
-    sql: SqlSection,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(default, deny_unknown_fields)]
-struct SqlSection {
-    enabled: bool,
-    timeout: String,
-    max_rows: i64,
-}
-impl Default for SqlSection {
-    fn default() -> Self {
-        Self {
-            enabled: false,
-            timeout: "10s".into(),
-            max_rows: 1_000,
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 struct McpSection {
@@ -501,7 +477,10 @@ struct NotificationsSection {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SlackSection {
-    webhook_url: Option<String>,
+    /// Slack bot token (`xoxb-…`).
+    bot_token: String,
+    /// Default channel (e.g. `#alerts`); a `slack` action may override it per rule.
+    channel: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -659,9 +638,6 @@ fn build_config(file: &FileConfig) -> Result<Config> {
         token,
         logs_auth,
         query_auth,
-        query_sql_enabled: file.query.sql.enabled,
-        query_sql_timeout: dur(&file.query.sql.timeout, "query.sql.timeout")?,
-        query_sql_max_rows: file.query.sql.max_rows,
         mcp_enabled: file.mcp.enabled,
         cors,
         alerting,
@@ -746,12 +722,13 @@ fn build_cors(c: &CorsSection) -> CorsOrigins {
 
 /// Canaux de notification globaux (repli pour les projets sans canaux propres).
 fn build_global_alerting(n: &NotificationsSection) -> AlertingConfig {
-    let slack_webhook_url = n.slack.as_ref().and_then(|s| s.webhook_url.clone());
+    let slack = n.slack.as_ref();
     let email = n.email.as_ref();
     AlertingConfig {
         rules_file: None,
         eval_interval: Duration::from_secs(60),
-        slack_webhook_url,
+        slack_bot_token: slack.map(|s| s.bot_token.clone()),
+        slack_channel: slack.map(|s| s.channel.clone()),
         smtp_host: email.map(|e| e.smtp_host.clone()),
         smtp_port: email.map(|e| e.smtp_port).unwrap_or(587),
         smtp_username: email.and_then(|e| e.username.clone()),
@@ -878,7 +855,10 @@ fn load_project(path: &Path, global: &NotificationsSection) -> Result<Project> {
     } else {
         global
     };
-    let slack_webhook_url = notify.slack.as_ref().and_then(|s| s.webhook_url.clone());
+    let slack = notify.slack.as_ref().map(|s| SlackBot {
+        token: s.bot_token.clone(),
+        default_channel: s.channel.clone(),
+    });
     let email = notify.email.as_ref().map(email_config);
 
     Ok(Project {
@@ -886,7 +866,7 @@ fn load_project(path: &Path, global: &NotificationsSection) -> Result<Project> {
         id: pf.project.id,
         eval_interval: dur(&pf.alerting.eval_interval, "alerting.eval_interval")?,
         rules,
-        slack_webhook_url,
+        slack,
         email,
     })
 }
@@ -945,12 +925,19 @@ fn project_from_env(ac: &AlertingConfig) -> Vec<Project> {
         }),
         _ => None,
     };
+    let slack = match (&ac.slack_bot_token, &ac.slack_channel) {
+        (Some(token), Some(channel)) => Some(SlackBot {
+            token: token.clone(),
+            default_channel: channel.clone(),
+        }),
+        _ => None,
+    };
     vec![Project {
         id: "default".into(),
         name: "default".into(),
         eval_interval: ac.eval_interval,
         rules,
-        slack_webhook_url: ac.slack_webhook_url.clone(),
+        slack,
         email,
     }]
 }

@@ -39,7 +39,7 @@ Any string in the TOML — top-level config **and** project files — is scanned
 url = "${DATABASE_URL}"
 
 [notifications.slack]
-webhook_url = "${SLACK_WEBHOOK_URL:-}"   # optional channel: empty if unset
+bot_token = "${SLACK_BOT_TOKEN}"         # Slack bot token (Web API, chat.postMessage)
 ```
 
 This keeps every secret out of version control. Real `datacat.toml` and `projects/*.toml` files are
@@ -56,7 +56,6 @@ All sections are optional except `[database].url`; omitted values use safe defau
 | `[ingest]` | micro-batch (`flush_interval`, `flush_batch_size`, `channel_capacity`), `retention_days`, `partition_future_days`; sub-sections `[ingest.limits]`, `[ingest.rate_limit]`, `[ingest.anomaly]` |
 | `[token]` | asymmetric token verification (public key only) — `enabled`, `algorithms`, key source (`jwks_url` \| `public_key_pem` \| `public_key_file`), `issuer`, `audience` |
 | `[auth.logs]` / `[auth.query]` | service-to-service auth for telemetry ingestion and for the read endpoints — `mode` (`auto`\|`static`\|`jwt`\|`none`) + `static_token` |
-| `[query.sql]` | read-only ad-hoc SQL endpoint (`enabled`, `timeout`, `max_rows`) |
 | `[mcp]` | embedded MCP HTTP server (`enabled`) |
 | `[export]` | scheduled cold export (see §5) |
 | `[notifications]` | global default Slack / e-mail channels (fallback for projects without their own) |
@@ -105,7 +104,8 @@ eval_interval = "60s"
 
 # Channels for this project (else fall back to the global [notifications]).
 [notifications.slack]
-webhook_url = "${BILLING_SLACK_WEBHOOK_URL}"
+bot_token = "${BILLING_SLACK_BOT_TOKEN}"
+channel = "#billing-alerts"
 
 [[alerting.rules]]
 name = "High error rate"

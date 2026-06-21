@@ -25,7 +25,7 @@
 ## Reading & operations
 | Document | Contents |
 |---|---|
-| [read-hot.md](read-hot.md) | **Hot** read layer (`/v1/query/*`, read-only SQL). |
+| [read-hot.md](read-hot.md) | **Hot** read layer (`/v1/query/*`). |
 | [read-cold.md](read-cold.md) | **Cold** reads (DataFusion over Parquet on S3). |
 | [cold-storage.md](cold-storage.md) | Cold export PostgreSQL → Parquet on S3 (Iceberg-friendly). |
 | [mcp.md](mcp.md) | **MCP** server: read access for an agent (Claude) — debug, exploration, correlation. |

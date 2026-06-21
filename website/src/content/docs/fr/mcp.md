@@ -18,7 +18,7 @@ vérifier des hypothèses et générer des tests**.
 - Protégé par `query_auth` (`auto`|`static`|`jwt`|`none`) + `QUERY_TOKEN` : le token de lecture
   est attendu dans l'en-tête `Authorization: Bearer` (même token que `/v1/query/*`).
 - Monté **hors du timeout HTTP global** (le flux SSE est long-vécu).
-- Lecture seule de bout en bout ; l'outil SQL ad-hoc est borné et désactivable (`QUERY_SQL_ENABLED`).
+- Lecture seule de bout en bout.
 
 ## Outils exposés
 
@@ -29,7 +29,6 @@ vérifier des hypothèses et générer des tests**.
 | `search_events` | Recherche d'events produit (actor, session, tenant, name, temps). |
 | `frequent_journeys` | Séquences de parcours fréquentes par session (génération de tests E2E). |
 | `search_metrics` | Points de métriques (name, service, temps). |
-| `run_read_sql` | SQL **lecture seule** ad-hoc (SELECT/WITH) sur events/logs/spans/metric_points. |
 | `ingest_stats` | Volumes et déduplication par domaine, drops. |
 
 ## Brancher dans Claude Code
@@ -64,7 +63,7 @@ ou via un `.mcp.json` de projet :
   → `search_events(actor=user-123, from=…)`.
 - **Générer un test E2E** : « Quels sont les 5 parcours les plus fréquents ? Écris un test
   Playwright pour le plus courant. » → `frequent_journeys(limit=5)` puis génération.
-- **Corréler** : « Pour la session `sess-abc`, montre les events et les logs côte à côte,
-  ordonnés dans le temps. »
-  → `run_read_sql("SELECT 'event' AS k, timestamp_client AS t, event_name AS d FROM events WHERE session_id='sess-abc' UNION ALL SELECT 'log', log_time, body FROM logs WHERE session_id='sess-abc' ORDER BY t")`.
+- **Corréler** : « Pour la session `sess-abc`, montre les events et les logs dans l'ordre
+  chronologique. »
+  → `search_events(session=sess-abc)` et `search_logs(session=sess-abc)`.
 - **Surveiller l'ingestion** : « Combien d'events/logs ingérés et dédupliqués ? » → `ingest_stats`.

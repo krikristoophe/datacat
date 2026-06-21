@@ -44,7 +44,6 @@ Les sections principales :
 | `[ingest]` | micro-batch (`flush_interval`, `flush_batch_size`, `channel_capacity`), `retention_days`, `partition_future_days` ; `[ingest.limits]`, `[ingest.rate_limit]`, `[ingest.anomaly]` |
 | `[token]` | vérification asymétrique du token (clé publique seule) : `enabled`, `algorithms`, source de clé (`jwks_url` \| `public_key_pem` \| `public_key_file`), `alg`, `issuer`, `audience` |
 | `[auth.logs]` / `[auth.query]` | auth service-à-service des flux télémétrie et des endpoints de lecture : `mode` (`auto`\|`static`\|`jwt`\|`none`) + `static_token` |
-| `[query.sql]` | endpoint SQL ad-hoc en lecture seule (`enabled`, `timeout`, `max_rows`) |
 | `[mcp]` | serveur MCP HTTP embarqué (`enabled`) |
 | `[export]` | export froid planifié embarqué (voir §10) |
 | `[notifications]` | canaux Slack / e-mail globaux par défaut (repli pour les projets) |

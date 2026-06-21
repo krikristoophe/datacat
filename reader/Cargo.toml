@@ -7,6 +7,7 @@ edition = "2021"
 license = "Proprietary"
 rust-version = "1.80"
 description = "Datacat — moteur de requête analytique SQL sur le stockage froid Parquet/S3 (DataFusion)"
+publish = false
 
 [[bin]]
 name = "datacat-query-cold"

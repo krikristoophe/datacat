@@ -55,11 +55,6 @@ static_token = "${LOGS_STATIC_TOKEN:-}"
 mode = "auto"
 static_token = "${QUERY_TOKEN:-}"
 
-[query.sql]
-enabled = false                      # endpoint SQL lecture seule (/v1/query/sql)
-timeout = "10s"
-max_rows = 1000
-
 [mcp]
 enabled = true                       # serveur MCP HTTP (/mcp)
 
@@ -77,8 +72,10 @@ allow_http = false
 tables = ["events", "logs"]
 
 # Canaux de notification GLOBAUX (repli pour les projets sans canaux propres).
-[notifications.slack]
-webhook_url = "${SLACK_WEBHOOK_URL:-}"
+# Slack via l'API Web (bot token + canal) — plus de webhook entrant.
+# [notifications.slack]
+# bot_token = "${SLACK_BOT_TOKEN}"
+# channel = "#alerts"
 
 # [notifications.email]
 # smtp_host = "smtp.example.com"

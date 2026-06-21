@@ -130,6 +130,7 @@ pub fn test_config(token: TokenConfig, tweak: impl FnOnce(&mut Config)) -> Confi
         query_sql_enabled: true,
         query_sql_timeout: Duration::from_secs(10),
         query_sql_max_rows: 1_000,
+        mcp_enabled: true,
         cors: CorsOrigins::Any,
         alerting: AlertingConfig {
             rules_file: None,

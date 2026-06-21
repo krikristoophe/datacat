@@ -1,34 +1,56 @@
 # Serveur MCP — accès lecture pour un agent (Claude)
 
-`mcp/` est un serveur **MCP** (Model Context Protocol) qui donne à Claude un accès **lecture** aux
-données Datacat (logs, traces, events, métriques, parcours). Il permet à l'agent de **debugger,
-analyser l'usage réel, vérifier des hypothèses, et alimenter la génération de tests** — sans
-jamais écrire ni accéder directement à la base (il passe par la [couche de lecture](read-hot.md)).
+Le backend Datacat expose un serveur **MCP** (Model Context Protocol) en **HTTP** sur la route
+**`/mcp`** (transport *streamable HTTP*). Il donne à un agent (Claude) un accès **lecture** aux
+données — logs, traces, events, métriques, parcours — pour **debugger, analyser l'usage réel,
+vérifier des hypothèses et générer des tests**.
 
-## Pourquoi
+> **Intégré, rien à installer.** Le MCP fait partie du binaire d'ingestion (crate Rust `rmcp`),
+> ses outils tapent la [couche de lecture](read-hot.md) **en in-process** (aucun saut HTTP).
+> Un agent s'y connecte simplement par une URL — pas de process ni de paquet à installer.
 
-Le système capture déjà les events produit + la télémétrie technique (logs/traces/métriques)
-corrélés. Le brancher à un agent ferme la boucle : l'agent peut interroger ce que les
-utilisateurs et les services font *réellement* pour diagnostiquer un incident, comprendre un
-parcours, ou écrire un test E2E fidèle à l'usage.
+## Activation & sécurité
 
-## Outils
+- Activé par défaut (`MCP_ENABLED=true`).
+- Protégé par `query_auth` (`auto`|`static`|`jwt`|`none`) + `QUERY_TOKEN` : le token de lecture
+  est attendu dans l'en-tête `Authorization: Bearer` (même token que `/v1/query/*`).
+- Monté **hors du timeout HTTP global** (le flux SSE est long-vécu).
+- Lecture seule de bout en bout ; l'outil SQL ad-hoc est borné et désactivable (`QUERY_SQL_ENABLED`).
 
-`search_logs`, `get_trace`, `search_events`, `frequent_journeys`, `search_metrics`,
-`run_read_sql` (SQL lecture seule), `ingest_stats`. Détails et schémas : [mcp/README.md](../mcp/README.md).
+## Outils exposés
 
-## Installation & branchement
+| Outil | Rôle |
+|---|---|
+| `search_logs` | Recherche de logs (service, session, trace_id, sévérité, sous-chaîne, temps). |
+| `get_trace` | Tous les spans d'une trace (par `trace_id`), ordonnés. |
+| `search_events` | Recherche d'events produit (actor, session, tenant, name, temps). |
+| `frequent_journeys` | Séquences de parcours fréquentes par session (génération de tests E2E). |
+| `search_metrics` | Points de métriques (name, service, temps). |
+| `run_read_sql` | SQL **lecture seule** ad-hoc (SELECT/WITH) sur events/logs/spans/metric_points. |
+| `ingest_stats` | Volumes et déduplication par domaine, drops. |
+
+## Brancher dans Claude Code
 
 ```bash
-cd mcp && npm install && npm run build
-claude mcp add datacat \
-  --env DATACAT_URL=http://localhost:8080 \
-  --env DATACAT_QUERY_TOKEN=<token-de-lecture> \
-  -- node "$PWD/dist/index.js"
+claude mcp add --transport http datacat https://datacat.example.com/mcp \
+  --header "Authorization: Bearer <token-de-lecture>"
 ```
 
-(Pour `run_read_sql`, activer `QUERY_SQL_ENABLED=true` côté serveur Datacat. Pour `query_auth`
-activé, fournir `DATACAT_QUERY_TOKEN`.)
+ou via un `.mcp.json` de projet :
+
+```json
+{
+  "mcpServers": {
+    "datacat": {
+      "type": "http",
+      "url": "https://datacat.example.com/mcp",
+      "headers": { "Authorization": "Bearer <token-de-lecture>" }
+    }
+  }
+}
+```
+
+(En local : `http://localhost:8080/mcp`. Si `QUERY_AUTH=none`, l'en-tête est inutile.)
 
 ## Exemples d'usage (prompts)
 
@@ -38,15 +60,8 @@ activé, fournir `DATACAT_QUERY_TOKEN`.)
 - **Comprendre un utilisateur** : « Quels events a produit l'acteur `user-123` aujourd'hui ? »
   → `search_events(actor=user-123, from=…)`.
 - **Générer un test E2E** : « Quels sont les 5 parcours les plus fréquents ? Écris un test
-  Playwright pour le plus courant. »
-  → `frequent_journeys(limit=5)` puis génération du test à partir de la séquence.
-- **Corréler** : « Pour la session `sess-abc`, montre les events produit et les logs techniques
-  côte à côte, ordonnés dans le temps. »
+  Playwright pour le plus courant. » → `frequent_journeys(limit=5)` puis génération.
+- **Corréler** : « Pour la session `sess-abc`, montre les events et les logs côte à côte,
+  ordonnés dans le temps. »
   → `run_read_sql("SELECT 'event' AS k, timestamp_client AS t, event_name AS d FROM events WHERE session_id='sess-abc' UNION ALL SELECT 'log', log_time, body FROM logs WHERE session_id='sess-abc' ORDER BY t")`.
 - **Surveiller l'ingestion** : « Combien d'events/logs ingérés et dédupliqués ? » → `ingest_stats`.
-
-## Sécurité
-
-Lecture seule de bout en bout : le serveur MCP n'appelle que `/v1/query/*` et `/stats`. Le SQL
-ad-hoc est borné (SELECT/WITH, transaction READ ONLY, timeout, plafond de lignes) et désactivable.
-L'accès est protégé par `QUERY_AUTH` (token de lecture) — le serveur MCP transmet le Bearer.

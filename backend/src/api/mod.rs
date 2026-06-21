@@ -3,7 +3,10 @@
 
 pub mod routes;
 
+use axum::extract::{Request, State};
 use axum::http::{header, HeaderValue, Method, StatusCode};
+use axum::middleware::{from_fn_with_state, Next};
+use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 use tower::ServiceBuilder;
@@ -13,6 +16,7 @@ use tower_http::timeout::TimeoutLayer;
 use tower_http::trace::TraceLayer;
 
 use crate::config::CorsOrigins;
+use crate::error::{AppError, AppResult};
 use crate::AppState;
 
 /// Construit le routeur avec ses garde-fous (CORS, limite de taille, timeout, traçage).
@@ -30,7 +34,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/v1/metrics", post(routes::ingest_metrics))
         .layer(axum::extract::DefaultBodyLimit::max(logs_body_limit));
 
-    Router::new()
+    let app = Router::new()
         .route("/v1/events", post(routes::ingest_events))
         .route("/healthz", get(routes::healthz))
         .route("/readyz", get(routes::readyz))
@@ -62,10 +66,39 @@ pub fn build_router(state: AppState) -> Router {
                     timeout,
                 ))
                 // Borne la taille du corps (anti-abus). Au-delà → 413.
-                .layer(axum::extract::DefaultBodyLimit::max(body_limit))
-                .layer(cors),
-        )
-        .with_state(state)
+                .layer(axum::extract::DefaultBodyLimit::max(body_limit)),
+        );
+
+    // Serveur MCP HTTP (streamable) monté sur /mcp, hors du timeout global (le SSE est
+    // long-vécu), protégé par `query_auth`. Tools en in-process sur la couche de lecture.
+    let app = if state.config.mcp_enabled {
+        let mcp = Router::new()
+            .nest_service("/mcp", crate::query::mcp::service(state.clone()))
+            .layer(from_fn_with_state(state.clone(), mcp_auth))
+            .layer(
+                ServiceBuilder::new()
+                    .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
+                    .layer(PropagateRequestIdLayer::x_request_id())
+                    .layer(TraceLayer::new_for_http()),
+            );
+        app.merge(mcp)
+    } else {
+        app
+    };
+
+    app.layer(cors).with_state(state)
+}
+
+/// Middleware d'authentification du serveur MCP (`query_auth`).
+async fn mcp_auth(State(state): State<AppState>, req: Request, next: Next) -> AppResult<Response> {
+    let token = crate::query::routes::bearer(req.headers());
+    crate::security::check_service_token(
+        &state.config.query_auth,
+        &state.verifier,
+        token.as_deref(),
+    )
+    .map_err(AppError::Unauthorized)?;
+    Ok(next.run(req).await)
 }
 
 fn build_cors(origins: &CorsOrigins) -> CorsLayer {

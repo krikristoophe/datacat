@@ -42,4 +42,4 @@ Tables interrogeables : `events`, `logs`, `spans`, `metric_points` (corrélables
 
 ## Accès par un agent (MCP)
 
-Le serveur [MCP](mcp.md) (`mcp/`) expose ces endpoints comme outils pour Claude.
+Le [serveur MCP HTTP](mcp.md) intégré (route `/mcp`) expose ces requêtes comme outils pour Claude.

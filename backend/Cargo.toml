@@ -59,6 +59,9 @@ lettre = { version = "0.11", default-features = false, features = ["smtp-transpo
 opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic", "logs", "trace", "metrics"] }
 tonic = { version = "0.14", default-features = false, features = ["server", "codegen", "transport", "router"] }
 tokio-stream = { version = "0.1", features = ["net"] }
+# Serveur MCP HTTP (streamable) intégré, exposant la couche de lecture à un agent (Claude).
+rmcp = { version = "1.7", default-features = false, features = ["server", "transport-streamable-http-server", "macros"] }
+schemars = "1"
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

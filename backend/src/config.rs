@@ -176,6 +176,8 @@ pub struct Config {
     pub query_sql_timeout: Duration,
     /// Nombre max de lignes renvoyées par une requête SQL ad-hoc.
     pub query_sql_max_rows: i64,
+    /// Serveur MCP HTTP (`/mcp`) activé ? Défaut true.
+    pub mcp_enabled: bool,
     pub cors: CorsOrigins,
     /// Moteur d'alerting (règles + notifications). Désactivé si non configuré.
     pub alerting: AlertingConfig,
@@ -286,6 +288,7 @@ impl Config {
             query_sql_enabled: env_bool("QUERY_SQL_ENABLED", false)?,
             query_sql_timeout: env_duration("QUERY_SQL_TIMEOUT", Duration::from_secs(10))?,
             query_sql_max_rows: env_parse("QUERY_SQL_MAX_ROWS", 1_000)?,
+            mcp_enabled: env_bool("MCP_ENABLED", true)?,
             cors,
             alerting: AlertingConfig::from_env()?,
         })

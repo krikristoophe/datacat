@@ -5,4 +5,6 @@
 //! servent l'exploration interactive : recherche de logs, récupération d'une trace, recherche
 //! d'events, et **séquences de parcours** (cœur du besoin de génération de tests).
 
+pub mod engine;
+pub mod mcp;
 pub mod routes;

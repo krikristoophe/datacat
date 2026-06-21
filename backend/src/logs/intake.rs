@@ -49,10 +49,13 @@ pub fn accept_logs(
         .first()
         .and_then(|l| l.service_name.clone())
         .unwrap_or_else(|| ip.to_string());
+    // Coût = nombre de records (borné par max_logs_records ci-dessus), pas 1 : sinon une requête
+    // de 2048 records ne coûterait qu'un jeton et contournerait le débit réel (revue de sécurité).
+    let cost = parse.stored.len().max(1) as u32;
     if let Decision::Deny {
         scope,
         retry_after_secs,
-    } = state.limiter.check(now, ip, &service_key, 1)
+    } = state.limiter.check(now, ip, &service_key, cost)
     {
         state.anomaly.record_bad(ip, now);
         return Err(AppError::RateLimited {

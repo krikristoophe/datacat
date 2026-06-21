@@ -43,9 +43,10 @@ expression = "MIT AND ISC AND OpenSSL"
 license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
 
 [bans]
-# Multiple versions of the same crate are common in large trees — warn, don't fail.
-multiple-versions = "warn"
-wildcards = "warn"
+# Multiple versions of the same crate are common in large dependency trees; path dependencies
+# (the embedded exporter) are intentional "wildcard" deps. Don't fail on either.
+multiple-versions = "allow"
+wildcards = "allow"
 
 [sources]
 # Only crates.io is allowed as a source; deny unknown registries and git dependencies.

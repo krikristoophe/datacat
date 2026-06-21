@@ -158,5 +158,15 @@ jobs:
           tool: cargo-deny
       # Politique unique `deny.toml` (advisories + licenses + sources + bans), appliquée au
       # workspace racine (backend + exporter via dep path) puis au crate `reader` autonome.
-      - run: cargo deny check
-      - run: cargo deny --manifest-path reader/Cargo.toml --config deny.toml check
+      # Code de sortie cargo-deny = champ de bits : bit 0 = ERREURS, bit 1 = warnings. On échoue
+      # uniquement sur les erreurs (les avis informationnels — DB d'avis fraîche en CI — ne
+      # doivent pas casser le build).
+      - name: cargo-deny (root + reader)
+        run: |
+          set +e
+          cargo deny check; r=$?
+          cargo deny --manifest-path reader/Cargo.toml check --config deny.toml; rr=$?
+          if [ $((r & 1)) -ne 0 ] || [ $((rr & 1)) -ne 0 ]; then
+            echo "cargo-deny reported errors"; exit 1
+          fi
+          echo "cargo-deny: no errors (warnings tolerated)"

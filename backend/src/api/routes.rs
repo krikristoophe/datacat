@@ -46,7 +46,8 @@ pub async fn ingest_events(
     // 1. Parsing strict du corps JSON.
     let parsed: IngestBody = serde_json::from_slice(&body).map_err(|e| {
         state.anomaly.record_bad(ip, now);
-        AppError::bad_request(format!("JSON invalide: {e}"))
+        tracing::debug!(error = %e, "corps JSON events invalide");
+        AppError::bad_request("corps JSON invalide")
     })?;
 
     // 2. Bornes du batch.
@@ -159,7 +160,10 @@ pub async fn ingest_logs(
 
     let req: ExportLogsServiceRequest = serde_json::from_slice(&body).map_err(|e| {
         state.anomaly.record_bad(ip, now);
-        AppError::bad_request(format!("OTLP JSON invalide: {e}"))
+        // Détail journalisé côté serveur uniquement : l'erreur serde peut contenir un fragment du
+        // corps (potentiellement PII) — on ne le renvoie jamais au client (HDS).
+        tracing::debug!(error = %e, "corps OTLP JSON invalide");
+        AppError::bad_request("corps OTLP JSON invalide")
     })?;
 
     let parsed = otlp_to_logs(req, Utc::now(), &state.limits);
@@ -198,7 +202,10 @@ pub async fn ingest_traces(
 
     let req: ExportTraceServiceRequest = serde_json::from_slice(&body).map_err(|e| {
         state.anomaly.record_bad(ip, now);
-        AppError::bad_request(format!("OTLP JSON invalide: {e}"))
+        // Détail journalisé côté serveur uniquement : l'erreur serde peut contenir un fragment du
+        // corps (potentiellement PII) — on ne le renvoie jamais au client (HDS).
+        tracing::debug!(error = %e, "corps OTLP JSON invalide");
+        AppError::bad_request("corps OTLP JSON invalide")
     })?;
 
     let parsed = otlp_to_spans(req, Utc::now(), &state.limits);
@@ -236,7 +243,10 @@ pub async fn ingest_metrics(
 
     let req: ExportMetricsServiceRequest = serde_json::from_slice(&body).map_err(|e| {
         state.anomaly.record_bad(ip, now);
-        AppError::bad_request(format!("OTLP JSON invalide: {e}"))
+        // Détail journalisé côté serveur uniquement : l'erreur serde peut contenir un fragment du
+        // corps (potentiellement PII) — on ne le renvoie jamais au client (HDS).
+        tracing::debug!(error = %e, "corps OTLP JSON invalide");
+        AppError::bad_request("corps OTLP JSON invalide")
     })?;
 
     let parsed = otlp_to_metrics(req, Utc::now(), &state.limits);
@@ -294,8 +304,19 @@ pub async fn readyz(State(state): State<AppState>) -> impl IntoResponse {
 }
 
 /// `GET /stats` — compteurs d'observabilité (events + logs).
-pub async fn stats(State(state): State<AppState>) -> impl IntoResponse {
-    Json(json!({
+pub async fn stats(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+) -> AppResult<impl IntoResponse> {
+    // `/stats` expose des métriques opérationnelles (sessions/IP suivies, IP bannies, volumes
+    // d'ingestion) : authentifié comme la lecture (`query_auth`), pas public. cf. revue de sécurité.
+    security::check_service_token(
+        &state.config.query_auth,
+        &state.verifier,
+        crate::query::routes::bearer(&headers).as_deref(),
+    )
+    .map_err(AppError::Unauthorized)?;
+    Ok(Json(json!({
         "events": state.events.metrics.snapshot(),
         "logs": state.logs.metrics.snapshot(),
         "traces": state.spans.metrics.snapshot(),
@@ -305,5 +326,5 @@ pub async fn stats(State(state): State<AppState>) -> impl IntoResponse {
             "tracked_ips": state.limiter.tracked_ips(),
         },
         "anomaly": { "banned_ips": state.anomaly.banned_count() },
-    }))
+    })))
 }

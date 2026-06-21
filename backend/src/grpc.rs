@@ -21,15 +21,23 @@ pub async fn serve<F>(state: AppState, listener: TcpListener, shutdown: F) -> an
 where
     F: std::future::Future<Output = ()> + Send + 'static,
 {
+    // Borne la taille de décodage gRPC, alignée sur la limite de corps OTLP HTTP (sinon le
+    // chemin gRPC accepterait silencieusement la valeur par défaut de tonic ~4 Mo, hors config).
+    let max_msg = state.config.max_logs_payload_bytes;
     let incoming = TcpListenerStream::new(listener);
     tonic::transport::Server::builder()
-        .add_service(LogsServiceServer::new(DatacatLogsService::new(
-            state.clone(),
-        )))
-        .add_service(TraceServiceServer::new(DatacatTracesService::new(
-            state.clone(),
-        )))
-        .add_service(MetricsServiceServer::new(DatacatMetricsService::new(state)))
+        .add_service(
+            LogsServiceServer::new(DatacatLogsService::new(state.clone()))
+                .max_decoding_message_size(max_msg),
+        )
+        .add_service(
+            TraceServiceServer::new(DatacatTracesService::new(state.clone()))
+                .max_decoding_message_size(max_msg),
+        )
+        .add_service(
+            MetricsServiceServer::new(DatacatMetricsService::new(state))
+                .max_decoding_message_size(max_msg),
+        )
         .serve_with_incoming_shutdown(incoming, shutdown)
         .await?;
     Ok(())

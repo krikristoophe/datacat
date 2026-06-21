@@ -33,10 +33,12 @@ pub fn accept_spans(
         .first()
         .and_then(|s| s.service_name.clone())
         .unwrap_or_else(|| ip.to_string());
+    // Coût = nombre de spans (borné ci-dessus), pas 1 (cf. revue de sécurité).
+    let cost = parse.stored.len().max(1) as u32;
     if let Decision::Deny {
         scope,
         retry_after_secs,
-    } = state.limiter.check(now, ip, &service_key, 1)
+    } = state.limiter.check(now, ip, &service_key, cost)
     {
         state.anomaly.record_bad(ip, now);
         return Err(AppError::RateLimited {

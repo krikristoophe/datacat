@@ -1,98 +1,95 @@
 # Security review (HDS posture)
 
-Point-in-time security review of the Datacat ingestion service, against the HDS-grade requirements
-in [CLAUDE.md](../CLAUDE.md) and the controls described in [security.md](security.md). This document
-records what was verified and the findings that were fixed.
-
-> Scope: the `backend` ingestion service (HTTP + gRPC), its configuration, alerting and read layers,
-> and the dependency supply chain. The standalone `reader` cold-query tool is out of scope here.
+Full-codebase security review of Datacat against the HDS-grade requirements in
+[CLAUDE.md](../CLAUDE.md) and the controls in [security.md](security.md). Per project policy, the
+review covers the **whole codebase** (backend ingestion/read/alerting/security, the `exporter` and
+`reader` crates), not just a diff. This document records what was verified, the findings, and their
+remediation status.
 
 ## 1. Controls verified ✓
 
-### Authentication & token verification (`security/token.rs`)
-- **Asymmetric only.** EdDSA / RS256; the service holds **public keys only** and can verify but
-  never forge a token. `none` and symmetric algorithms are rejected.
-- **No algorithm confusion.** The `alg` from the JWT header is checked against an explicit allow-list
-  (`algorithms`) *before* a key is selected; the selected key must match that algorithm. An attacker
-  cannot downgrade RS256 → HS256 (HS256 is not allow-listed, and the key is an asymmetric
-  `DecodingKey`).
-- **Expiry & claims.** `validate_exp = true`, `exp` is a required claim; `iat` presence is enforced
-  by deserialization; `actor_id` / `session_id` must be non-empty. Configurable `leeway`.
-- **Issuer / audience.** Validated when configured.
-- **Key id (`kid`).** When the token carries a `kid`, an exact match is required (no silent
-  fallback to another key).
-- **Rotation.** JWKS keys are refreshed by a background task without redeployment.
-
-### Service-to-service auth (`security/mod.rs`)
-- Static service tokens are compared in **constant time** (only the length is revealed, which is
-  standard). The telemetry ingestion streams (logs/traces/metrics) and the read endpoints share this
-  check; the MCP endpoint (`/mcp`) is gated by `query_auth`.
-
-### Input validation & DoS guards
-- Strict structural validation (batch size, payload size, property size, string length, JSON depth,
-  timestamp skew) — see [CONTRACT.md](CONTRACT.md).
-- Per-route **body-size limits** (`DefaultBodyLimit`), a **request timeout** layer, two-level
-  **rate limiting** + a global net, and an **anomaly guard** that temporarily bans abusive IPs.
-
-### Read-only SQL endpoint (`query/engine.rs::run_read_sql`)
-- **Disabled by default** (`[query.sql].enabled = false`).
-- Accepts only `SELECT` / `WITH`, **rejects `;`** (single statement, no chaining), and executes
-  inside a **`SET TRANSACTION READ ONLY`** transaction with a **`statement_timeout`**. Even a CTE
-  attempting a write is blocked by the read-only transaction (defense in depth). Results are wrapped
-  in `to_jsonb(...)` and bounded by `LIMIT`.
-
-### SQL injection surface (alerting engine)
-- Dynamic SQL is built with `QueryBuilder`; only **allow-listed identifiers** (table names, time
-  columns, `group_by` keys) are ever interpolated — every user/operator value is **bound** as a
-  parameter. The `group_by` allow-list (`body`, `service_name`, `severity_text`, `trace_id`,
-  `attr:<key>`) prevents injection through grouping.
-
-### Error handling (`error.rs`)
-- Internal errors are logged server-side and returned as a **generic 500** — no internals leak to
-  clients. 401 carries `WWW-Authenticate: Bearer`; 429 carries `Retry-After`.
-
-### Secret hygiene (`settings.rs`)
-- Configuration is TOML; secrets are referenced via `${VAR}` / `${VAR:-default}` and resolved from
-  the environment. A required `${VAR}` with no value makes startup **fail closed**. Real
-  `datacat.toml` / `projects/*.toml` are git-ignored — **no secrets in version control**. No secret
-  values are written to logs.
-
-### Transport & supply chain
-- TLS via **rustls** throughout (no OpenSSL): JWKS fetch, Slack/webhook POSTs, SMTP (STARTTLS),
-  PostgreSQL, S3. `#![forbid(unsafe_code)]`.
-- CI runs `cargo-audit` on every push.
+- **Token verification** (`security/token.rs`): asymmetric only (EdDSA/RS256, public key only);
+  `alg` checked against an allow-list before key selection (no algorithm confusion); `exp` required
+  and validated; `iat` presence enforced; `kid` exact-match; issuer/audience validated when set;
+  JWKS rotation; poison-tolerant key lock (no request-path panic).
+- **Service-to-service auth** (`security/mod.rs`): static tokens compared in **constant time**;
+  telemetry ingestion (logs/traces/metrics) and the read endpoints share the check; `/mcp` and
+  `/stats` are gated.
+- **SQL injection**: migrations build dynamic SQL with `format('%I'/%L', …)` over `to_char`-derived
+  partition names (no user input). The alerting engine interpolates only **allow-listed**
+  identifiers (tables, time columns, `group_by` keys) and **binds** every value. The COPY encoder
+  doubles quotes / keeps newlines inside quoted fields (no row injection).
+- **Idempotence**: every stream is keyed by `(partition_timestamp, id)` with a PK + `DISTINCT ON`
+  + `ON CONFLICT DO NOTHING`; the skew window clamps attacker timestamps so partition creation is
+  bounded.
+- **Availability**: `panic = "unwind"` + an outermost `CatchPanicLayer` turn a handler panic into a
+  logged 500 instead of a process crash; request-path locks (token, rate limiter) are
+  poison-tolerant.
+- **Error handling** (`error.rs`): internal errors → generic 500, logged server-side; parse-error
+  detail is no longer reflected to clients (potential PII).
+- **Secret hygiene** (`settings.rs`): TOML config with `${VAR}` env references, fail-closed on a
+  missing required secret; real config files git-ignored; no secrets logged. Wildcard CORS and
+  disabled token verification require the explicit `--features dev` build (`enforce_runtime_guards`).
+- **Transport / supply chain**: rustls throughout (no OpenSSL); `#![forbid(unsafe_code)]`; CI runs
+  `cargo-audit` (backend/exporter/reader) and a `cargo-deny` policy (advisories + licenses + sources).
 
 ## 2. Findings fixed in this review
 
-### F-1 — Availability: a handler panic could crash the whole process (medium)
-The release profile used `panic = "abort"`, so **any** panic reachable from a request handler would
-abort the entire process (dropping in-flight batches and all connections) — and the `tower-http`
-`catch-panic` feature, though enabled, was never wired. There were also two `.expect()` calls on a
-`RwLock` in the token-verification request path (panic on lock poisoning).
+| ID | Sev | Area | Fix |
+|---|---|---|---|
+| S-1 | High | `security/ratelimit.rs` | Mutex `.expect()` on the global/session/IP locks → a single panic while held would poison the lock and **permanently 500 the whole ingestion path**. Now poison-tolerant (`unwrap_or_else(\|e\| e.into_inner())`), matching the token verifier. |
+| S-2 | High | `api/routes.rs` `/stats` | Endpoint was **unauthenticated**, leaking tracked-session/IP counts, banned-IP count and ingestion volumes (lets an attacker tune a flood / confirm a ban). Now gated by `query_auth`. |
+| S-3 | Medium | OTLP intake (logs/traces/metrics) | Rate limiter charged **1 token regardless of record count** (up to 2048), so a packed request bypassed the real write-rate ceiling. Cost is now the record count. |
+| S-4 | Medium | `grpc.rs` | No gRPC decode-size limit (HTTP had per-route body limits) — silently relied on tonic's 4 MB default. Now `max_decoding_message_size` is set from `max_logs_payload_bytes`. |
+| S-5 | Low | `api/routes.rs` | serde parse errors echoed a fragment of the (potentially PII) body back to the client. Now logged server-side only; client gets a generic 400. |
+| (prev) | Med | release profile | `panic = "abort"` → handler panic crashed the process; switched to `unwind` + `CatchPanicLayer`. |
 
-**Fix:** switched the release profile to `panic = "unwind"`, wired `CatchPanicLayer` (outermost) on
-both the main and MCP routers so a handler panic becomes a logged **500** instead of a crash, and
-replaced the request-path `.expect()`s with poison-tolerant guard recovery
-(`unwrap_or_else(|e| e.into_inner())`). Covered by a regression test
-(`api::tests::handler_panic_becomes_500`).
+## 3. Findings documented — remediation planned
 
-### F-2 — CI: RustSec audit false positive (low / process)
-`RUSTSEC-2023-0071` (`rsa`, Marvin timing attack) was failing CI. The `rsa` crate is an **uncompiled
-optional dependency** of the `sqlx` MySQL backend, which Datacat does not enable (`cargo tree -i rsa`
-is empty); Datacat performs **public-key verification only** and never an RSA private-key operation,
-so the timing sidechannel does not apply. Ignored with this justification in CI, to be revisited if
-`rsa` ever enters the build graph.
+These are real but require larger / feature-sized changes or carry lower exploitability; they are
+tracked for follow-up.
 
-## 3. Accepted risks / notes
-- **Wildcard CORS** (`allowed_origins = ["*"]`) is supported for development. It is **not** combined
-  with `allow_credentials`, and the bearer token is an explicit app-held credential (not an ambient
-  cookie), so there is no CSRF-style exposure. Production deployments should pin an origin allow-list.
-- **Webhook / Slack action URLs** are operator-configured (from TOML), not user-supplied, so the
-  alerting egress is not an SSRF vector for untrusted input.
-- **Ad-hoc SQL endpoint**: even with all the guards above, it is a powerful debugging tool — keep it
-  disabled in production unless gated behind a strong `[auth.query]` token.
+- **S-6 (High) — `reader/src/engine.rs`: arbitrary SQL → local-file read.** The cold `reader` runs
+  user-supplied SQL on a default DataFusion `SessionContext`, which exposes `read_csv` /
+  `read_parquet` / `read_json` table functions over the local filesystem — `SELECT * FROM
+  read_csv('/etc/passwd')` exfiltrates host files. **Mitigation today**: the reader is an
+  **operator-only CLI** with no network endpoint (it already requires shell + S3 creds), so it is
+  not an external attack surface; it must only run trusted SQL. **Planned**: build the
+  `SessionContext` without the local-filesystem object store / disable the file table functions so
+  even a forwarded query cannot read outside the configured S3 bucket.
+- **S-7 (Medium) — OTLP per-record size validation.** `max_string_len` / `max_json_depth` /
+  `max_properties_bytes` are applied to **events** but not to OTLP logs/traces/metrics, which are
+  bounded only by record *count* (`max_logs_records`) and the body size limit. A single record with
+  a multi-MB body or tens of thousands of attributes is stored verbatim. **Planned**: a per-record
+  size/attribute-count cap (drop oversized records, tolerant-loss) with a dedicated config knob.
+- **S-8 (Medium) — `max_logs_records` checked after flattening.** The count cap is enforced after
+  the request is fully expanded into `Vec<Stored*>`, allowing transient memory amplification.
+  **Planned**: short-circuit the flatten loop at the limit.
+- **S-9 (Medium) — gRPC `request_ip` falls back to `0.0.0.0`.** Behind a proxy/socket where
+  `remote_addr` is unavailable, all gRPC clients collapse onto one IP (shared-fate ban / meaningless
+  per-IP cap). **Planned**: skip IP-scoped ban/limit when the peer IP is unknown, or require a
+  trusted proxy protocol. Note: gRPC is typically deployed with direct connections.
+- **S-10 (Low) — rate-limiter micro-races / ordering.** The per-session first-insert is
+  get-then-insert (not atomic) and the global bucket is debited before the session/IP checks; both
+  are backstopped by the per-IP session cap and the global net. **Planned**: DashMap `entry` API +
+  check session/IP before debiting global.
+- **S-11 (Low) — `anomaly.rs`.** Rightmost-parseable `X-Forwarded-For` token can skip a malformed
+  entry; a saturated banned-map can fail-open for brand-new IPs. Bounded impact. **Planned**:
+  strict rightmost-hop parse; reserve headroom in the banned map.
+- **S-12 (Low) — exporter `prefix` / timestamp coercion.** Operator-supplied S3 `prefix` is not
+  validated for `..`; extreme OTLP timestamps are silently coerced to `received_at` rather than
+  rejected. Operator-config / data-integrity, not external RCE. **Planned**: validate prefix; reject
+  out-of-range timestamps.
 
-## 4. Recommended next steps (not blocking)
+## 4. Accepted risks / notes
+
+- **Wildcard CORS** is dev-only (compile-time `--features dev`); not combined with credentials; the
+  bearer token is app-held, not an ambient cookie → no CSRF-style exposure.
+- **Webhook / Slack egress** targets are operator-configured (TOML), not user input → not an SSRF
+  vector for untrusted data.
+- **RUSTSEC-2023-0071** (`rsa`) is ignored with justification: `rsa` is an uncompiled optional dep
+  of the sqlx MySQL backend (not enabled); Datacat does only public-key verification.
+
+## 5. Recommended next steps
 - Run the cloud multi-agent review (`/code-review`) for an independent pass.
-- Extend `cargo-audit` to the `reader` / `exporter` lockfiles in CI.
-- Consider a `cargo-deny` policy (licenses + sources + advisories) for stricter supply-chain control.
+- Land S-6 (reader sandbox) and S-7 (OTLP per-record limits) — the two highest-value remaining items.

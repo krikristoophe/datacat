@@ -130,11 +130,12 @@ impl RateLimiter {
     pub fn check(&self, now: Instant, ip: IpAddr, session_id: &str, n: u32) -> Decision {
         let n = f64::from(n.max(1));
 
-        // 1. Filet global.
+        // 1. Filet global. (verrou tolérant à l'empoisonnement : jamais de panic — sinon un
+        // unique panic figerait tout le chemin d'ingestion, cf. revue de sécurité.)
         if let Err(wait) = self
             .global
             .lock()
-            .expect("verrou global empoisonné")
+            .unwrap_or_else(|e| e.into_inner())
             .try_take(n, now)
         {
             return deny("global", wait);
@@ -143,7 +144,7 @@ impl RateLimiter {
         // 2. Limite fine par session.
         match self.sessions.get(session_id) {
             Some(state) => {
-                let mut s = state.lock().expect("verrou session empoisonné");
+                let mut s = state.lock().unwrap_or_else(|e| e.into_inner());
                 s.last_seen = now;
                 if let Err(wait) = s.bucket.try_take(n, now) {
                     return deny("session", wait);
@@ -173,7 +174,7 @@ impl RateLimiter {
         let entry = self.ips.get(&ip);
         match entry {
             Some(w) => {
-                let mut win = w.lock().expect("verrou ip empoisonné");
+                let mut win = w.lock().unwrap_or_else(|e| e.into_inner());
                 if let Err(wait) = win.record(
                     session_id,
                     now,

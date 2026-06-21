@@ -22,10 +22,11 @@ pub fn build_router(state: AppState) -> Router {
     let logs_body_limit = state.config.max_logs_payload_bytes;
     let timeout = state.config.request_timeout;
 
-    // Les logs OTLP ont leur propre (plus grande) limite de corps : route isolée puis fusionnée.
-    // La limite la plus interne l'emporte pour cette route.
-    let logs_routes = Router::new()
+    // Les flux OTLP (logs, traces) ont leur propre (plus grande) limite de corps : routes isolées
+    // puis fusionnées. La limite la plus interne l'emporte pour ces routes.
+    let otlp_routes = Router::new()
         .route("/v1/logs", post(routes::ingest_logs))
+        .route("/v1/traces", post(routes::ingest_traces))
         .layer(axum::extract::DefaultBodyLimit::max(logs_body_limit));
 
     Router::new()
@@ -33,7 +34,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(routes::healthz))
         .route("/readyz", get(routes::readyz))
         .route("/stats", get(routes::stats))
-        .merge(logs_routes)
+        .merge(otlp_routes)
         .layer(
             ServiceBuilder::new()
                 .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))

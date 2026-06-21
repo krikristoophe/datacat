@@ -12,10 +12,13 @@ pub mod config;
 pub mod db;
 pub mod error;
 pub mod events;
+pub mod grpc;
 pub mod ingest;
 pub mod logs;
+pub mod otlp;
 pub mod security;
 pub mod telemetry;
+pub mod traces;
 
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -27,6 +30,7 @@ use crate::events::model::StoredEvent;
 use crate::ingest::Ingestor;
 use crate::logs::StoredLog;
 use crate::security::{AnomalyGuard, RateLimiter, TokenVerifier};
+use crate::traces::StoredSpan;
 
 pub use api::build_router;
 
@@ -37,6 +41,8 @@ pub struct AppState {
     pub events: Ingestor<StoredEvent>,
     /// Ingestion des logs techniques OTLP (`/v1/logs`).
     pub logs: Ingestor<StoredLog>,
+    /// Ingestion des traces OTLP (`/v1/traces`).
+    pub spans: Ingestor<StoredSpan>,
     pub limiter: Arc<RateLimiter>,
     pub verifier: Arc<TokenVerifier>,
     pub anomaly: Arc<AnomalyGuard>,

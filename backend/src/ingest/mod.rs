@@ -52,6 +52,27 @@ pub fn push_csv_opt(out: &mut String, value: Option<&str>) {
     }
 }
 
+/// Pousse un horodatage optionnel en RFC3339 (champ vide ⇒ NULL).
+pub fn push_csv_ts(out: &mut String, ts: Option<chrono::DateTime<chrono::Utc>>) {
+    if let Some(t) = ts {
+        out.push_str(&t.to_rfc3339());
+    }
+}
+
+/// Pousse un entier optionnel (champ vide ⇒ NULL).
+pub fn push_csv_num(out: &mut String, n: Option<i64>) {
+    if let Some(v) = n {
+        out.push_str(&v.to_string());
+    }
+}
+
+/// Pousse un flottant optionnel (champ vide ⇒ NULL).
+pub fn push_csv_f64(out: &mut String, n: Option<f64>) {
+    if let Some(v) = n {
+        out.push_str(&v.to_string());
+    }
+}
+
 /// Compteurs d'observabilité d'un domaine (exposés via `/stats`, journalisés à chaque flush).
 #[derive(Default)]
 pub struct IngestMetrics {

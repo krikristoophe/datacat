@@ -17,6 +17,7 @@ use datacat_ingest::logs::StoredLog;
 use datacat_ingest::security::AnomalyGuard;
 use datacat_ingest::security::RateLimiter;
 use datacat_ingest::security::TokenVerifier;
+use datacat_ingest::traces::StoredSpan;
 use datacat_ingest::{build_router, db, telemetry, AppState};
 
 #[tokio::main]
@@ -35,10 +36,12 @@ async fn main() -> Result<()> {
     );
     db::ensure_partition_window(&pool, past_days, future_days).await?;
     db::ensure_log_partition_window(&pool, past_days, future_days).await?;
+    db::ensure_span_partition_window(&pool, past_days, future_days).await?;
 
     for (domain, drained) in [
         ("events", db::drain_staging(&pool).await),
         ("logs", db::drain_log_staging(&pool).await),
+        ("traces", db::drain_span_staging(&pool).await),
     ] {
         match drained {
             Ok(n) if n > 0 => tracing::info!(domain, merged = n, "staging résiduel fusionné"),
@@ -52,6 +55,9 @@ async fn main() -> Result<()> {
     if let Err(e) = db::purge_old_log_partitions(&pool, config.retention_days).await {
         tracing::warn!(error = %e, "purge initiale des partitions (logs) ignorée");
     }
+    if let Err(e) = db::purge_old_span_partitions(&pool, config.retention_days).await {
+        tracing::warn!(error = %e, "purge initiale des partitions (traces) ignorée");
+    }
 
     // --- Composants d'ingestion (un batcher par domaine) ---
     let (events, events_batcher) = ingest::spawn::<StoredEvent>(
@@ -62,6 +68,13 @@ async fn main() -> Result<()> {
         Arc::new(IngestMetrics::default()),
     );
     let (logs, logs_batcher) = ingest::spawn::<StoredLog>(
+        pool.clone(),
+        config.flush_interval,
+        config.flush_batch_size,
+        config.channel_capacity,
+        Arc::new(IngestMetrics::default()),
+    );
+    let (spans, spans_batcher) = ingest::spawn::<StoredSpan>(
         pool.clone(),
         config.flush_interval,
         config.flush_batch_size,
@@ -92,6 +105,7 @@ async fn main() -> Result<()> {
     let state = AppState {
         events,
         logs,
+        spans,
         limiter,
         verifier,
         anomaly,
@@ -111,14 +125,14 @@ async fn main() -> Result<()> {
     // --- Serveur OTLP/gRPC (logs), optionnel ---
     let grpc_handle = if config.grpc_enabled {
         let listener = tokio::net::TcpListener::bind(config.grpc_bind_addr).await?;
-        tracing::info!(addr = %config.grpc_bind_addr, "OTLP/gRPC (logs) à l'écoute");
+        tracing::info!(addr = %config.grpc_bind_addr, "OTLP/gRPC (logs + traces) à l'écoute");
         let st = state.clone();
         let mut rx = sd_rx.clone();
         Some(tokio::spawn(async move {
             let shutdown = async move {
                 let _ = rx.changed().await;
             };
-            if let Err(e) = datacat_ingest::logs::grpc::serve(st, listener, shutdown).await {
+            if let Err(e) = datacat_ingest::grpc::serve(st, listener, shutdown).await {
                 tracing::error!(error = %e, "serveur gRPC arrêté sur erreur");
             }
         }))
@@ -145,6 +159,7 @@ async fn main() -> Result<()> {
     }
     events_batcher.shutdown().await;
     logs_batcher.shutdown().await;
+    spans_batcher.shutdown().await;
     pool.close().await;
     tracing::info!("arrêt terminé");
     Ok(())
@@ -170,6 +185,9 @@ fn spawn_maintenance(
             if let Err(e) = db::ensure_log_partition_window(&pool, past_days, future_days).await {
                 tracing::warn!(error = %e, "maintenance: création de partitions (logs) échouée");
             }
+            if let Err(e) = db::ensure_span_partition_window(&pool, past_days, future_days).await {
+                tracing::warn!(error = %e, "maintenance: création de partitions (traces) échouée");
+            }
             match db::purge_old_partitions(&pool, config.retention_days).await {
                 Ok(n) if n > 0 => {
                     tracing::info!(domain = "events", dropped = n, "partitions purgées")
@@ -183,6 +201,13 @@ fn spawn_maintenance(
                 }
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "maintenance: purge (logs) échouée"),
+            }
+            match db::purge_old_span_partitions(&pool, config.retention_days).await {
+                Ok(n) if n > 0 => {
+                    tracing::info!(domain = "traces", dropped = n, "partitions purgées")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "maintenance: purge (traces) échouée"),
             }
         }
     });

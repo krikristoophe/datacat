@@ -22,6 +22,7 @@ use datacat_ingest::events::model::StoredEvent;
 use datacat_ingest::ingest::{self, BatcherHandle, IngestMetrics};
 use datacat_ingest::logs::StoredLog;
 use datacat_ingest::security::{AnomalyGuard, RateLimiter, TokenVerifier};
+use datacat_ingest::traces::StoredSpan;
 use datacat_ingest::{build_router, db, AppState};
 
 pub const ED_PUBLIC: &str = include_str!("../fixtures/ed25519_public.pem");
@@ -193,6 +194,25 @@ impl TestApp {
             .unwrap()
     }
 
+    pub async fn count_spans(&self) -> i64 {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM spans")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+    }
+
+    /// Attend que le nombre total de spans atteigne `expected`.
+    pub async fn wait_spans(&self, expected: i64, timeout: Duration) -> i64 {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let c = self.count_spans().await;
+            if c >= expected || Instant::now() >= deadline {
+                return c;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    }
+
     /// Attend que le nombre total d'events atteigne `expected` (flush asynchrone).
     pub async fn wait_total(&self, expected: i64, timeout: Duration) -> i64 {
         let deadline = Instant::now() + timeout;
@@ -228,9 +248,13 @@ impl TestApp {
 pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
     db::ensure_partition_window(&pool, 40, 3).await.unwrap();
     db::ensure_log_partition_window(&pool, 40, 3).await.unwrap();
+    db::ensure_span_partition_window(&pool, 40, 3)
+        .await
+        .unwrap();
 
     let metrics = Arc::new(IngestMetrics::default());
     let logs_metrics = Arc::new(IngestMetrics::default());
+    let spans_metrics = Arc::new(IngestMetrics::default());
     let (events, events_batcher) = ingest::spawn::<StoredEvent>(
         pool.clone(),
         cfg.flush_interval,
@@ -245,6 +269,13 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
         cfg.channel_capacity,
         Arc::clone(&logs_metrics),
     );
+    let (spans, spans_batcher) = ingest::spawn::<StoredSpan>(
+        pool.clone(),
+        cfg.flush_interval,
+        cfg.flush_batch_size,
+        cfg.channel_capacity,
+        Arc::clone(&spans_metrics),
+    );
     let verifier = TokenVerifier::new(&cfg.token).await.unwrap();
     let limiter = Arc::new(RateLimiter::new(cfg.rate_limit.clone(), Instant::now()));
     let anomaly = Arc::new(AnomalyGuard::new(cfg.anomaly.clone()));
@@ -253,6 +284,7 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
     let state = AppState {
         events,
         logs,
+        spans,
         limiter,
         verifier,
         anomaly,
@@ -262,17 +294,14 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
         ready: Arc::new(AtomicBool::new(true)),
     };
 
-    // Serveur OTLP/gRPC (logs) sur un port éphémère, partageant l'AppState.
+    // Serveur OTLP/gRPC (logs + traces) sur un port éphémère, partageant l'AppState.
     let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let grpc_addr = grpc_listener.local_addr().unwrap();
     let grpc_state = state.clone();
     tokio::spawn(async move {
-        let _ = datacat_ingest::logs::grpc::serve(
-            grpc_state,
-            grpc_listener,
-            std::future::pending::<()>(),
-        )
-        .await;
+        let _ =
+            datacat_ingest::grpc::serve(grpc_state, grpc_listener, std::future::pending::<()>())
+                .await;
     });
 
     let app = build_router(state).into_make_service_with_connect_info::<SocketAddr>();
@@ -288,7 +317,7 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
         logs_metrics,
         grpc_addr,
         pool,
-        batchers: vec![events_batcher, logs_batcher],
+        batchers: vec![events_batcher, logs_batcher, spans_batcher],
     }
 }
 

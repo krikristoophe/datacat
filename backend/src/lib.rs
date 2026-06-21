@@ -16,6 +16,7 @@ pub mod grpc;
 pub mod ingest;
 pub mod logs;
 pub mod otlp;
+pub mod query;
 pub mod security;
 pub mod telemetry;
 pub mod traces;

@@ -34,6 +34,17 @@ pub fn build_router(state: AppState) -> Router {
         .route("/healthz", get(routes::healthz))
         .route("/readyz", get(routes::readyz))
         .route("/stats", get(routes::stats))
+        // Couche de lecture (lecture seule, authentifiée par query_auth).
+        .route("/v1/query/logs", get(crate::query::routes::query_logs))
+        .route("/v1/query/events", get(crate::query::routes::query_events))
+        .route(
+            "/v1/query/traces/{trace_id}",
+            get(crate::query::routes::query_trace),
+        )
+        .route(
+            "/v1/query/journeys",
+            get(crate::query::routes::query_journeys),
+        )
         .merge(otlp_routes)
         .layer(
             ServiceBuilder::new()

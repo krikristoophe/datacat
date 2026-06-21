@@ -124,6 +124,8 @@ pub fn test_config(token: TokenConfig, tweak: impl FnOnce(&mut Config)) -> Confi
         // Par défaut, les logs sont authentifiés par JWT (les tests logs envoient un JWT).
         // Les tests du token statique surchargent via `tweak`.
         logs_auth: LogsAuth::Jwt,
+        // Lecture ouverte par défaut en test ; un test dédié surcharge en Static.
+        query_auth: LogsAuth::None,
         cors: CorsOrigins::Any,
     };
     tweak(&mut cfg);

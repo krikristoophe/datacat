@@ -108,7 +108,10 @@ pub struct Config {
     pub rate_limit: RateLimitConfig,
     pub anomaly: AnomalyConfig,
     pub token: TokenConfig,
+    /// Auth des flux d'ingestion télémétrie (logs, traces) — service-à-service.
     pub logs_auth: LogsAuth,
+    /// Auth des endpoints de lecture (`/v1/query/*`).
+    pub query_auth: LogsAuth,
     pub cors: CorsOrigins,
 }
 
@@ -128,17 +131,15 @@ pub enum LogsAuth {
 }
 
 impl LogsAuth {
-    /// `LOGS_AUTH` ∈ {auto, static, jwt, none} (défaut `auto`) + `LOGS_STATIC_TOKEN`.
+    /// `<auth_var>` ∈ {auto, static, jwt, none} (défaut `auto`) + `<token_var>`.
     /// `auto` : statique si un token statique est fourni, sinon JWT si la vérif token est
     /// activée, sinon aucune.
-    fn from_env(token_enabled: bool) -> Result<Self> {
-        let static_token = std::env::var("LOGS_STATIC_TOKEN")
-            .ok()
-            .filter(|s| !s.is_empty());
-        match env_str("LOGS_AUTH", "auto").to_ascii_lowercase().as_str() {
+    fn from_env_vars(auth_var: &str, token_var: &str, token_enabled: bool) -> Result<Self> {
+        let static_token = std::env::var(token_var).ok().filter(|s| !s.is_empty());
+        match env_str(auth_var, "auto").to_ascii_lowercase().as_str() {
             "static" => static_token
                 .map(LogsAuth::Static)
-                .context("LOGS_AUTH=static exige LOGS_STATIC_TOKEN"),
+                .with_context(|| format!("{auth_var}=static exige {token_var}")),
             "jwt" => Ok(LogsAuth::Jwt),
             "none" => Ok(LogsAuth::None),
             "auto" => Ok(match static_token {
@@ -146,7 +147,7 @@ impl LogsAuth {
                 None if token_enabled => LogsAuth::Jwt,
                 None => LogsAuth::None,
             }),
-            other => bail!("LOGS_AUTH invalide: {other} (auto|static|jwt|none)"),
+            other => bail!("{auth_var} invalide: {other} (auto|static|jwt|none)"),
         }
     }
 }
@@ -183,7 +184,8 @@ impl Config {
         };
 
         let token = TokenConfig::from_env()?;
-        let logs_auth = LogsAuth::from_env(token.enabled)?;
+        let logs_auth = LogsAuth::from_env_vars("LOGS_AUTH", "LOGS_STATIC_TOKEN", token.enabled)?;
+        let query_auth = LogsAuth::from_env_vars("QUERY_AUTH", "QUERY_TOKEN", token.enabled)?;
         let cors = cors_from_env()?;
 
         let bind_addr = env_str("BIND_ADDR", "0.0.0.0:8080")
@@ -214,6 +216,7 @@ impl Config {
             anomaly,
             token,
             logs_auth,
+            query_auth,
             cors,
         })
     }

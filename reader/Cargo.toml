@@ -1,0 +1,74 @@
+[workspace]
+
+[package]
+name = "datacat-reader"
+version = "0.1.0"
+edition = "2021"
+license = "Proprietary"
+rust-version = "1.80"
+description = "Datacat — moteur de requête analytique SQL sur le stockage froid Parquet/S3 (DataFusion)"
+
+[[bin]]
+name = "datacat-query-cold"
+path = "src/main.rs"
+
+[lib]
+name = "datacat_reader"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros"] }
+
+# DataFusion query engine — utilise les features par défaut (inclut sql, parquet, compression…)
+datafusion = { version = "54", features = [
+    "parquet",
+    "encoding_expressions",
+    "crypto_expressions",
+    "unicode_expressions",
+    "regex_expressions",
+    "datetime_expressions",
+    "string_expressions",
+] }
+
+# Object storage (S3 / MinIO) — must match DataFusion's internal version
+object_store = { version = "0.13", features = ["aws"] }
+
+# Arrow (must match DataFusion's internal version)
+arrow = { version = "58", default-features = false, features = ["prettyprint", "json"] }
+
+# Parquet (for writing test fixtures — must match DataFusion's internal version)
+parquet = { version = "58", default-features = false, features = ["arrow", "async", "zstd"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Error handling
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+# URL parsing
+url = "2"
+
+# Bytes
+bytes = "1"
+
+# JSON (for --format json output)
+serde_json = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+hmac = "0.12"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

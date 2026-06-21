@@ -126,6 +126,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: rustsec/audit-check@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
+          tool: cargo-audit
+      - name: Audit (cargo-audit)
+        # RUSTSEC-2023-0071 (rsa — Marvin timing attack) est ignoré avec justification :
+        #  - le crate `rsa` n'est tiré QUE comme dépendance optionnelle NON COMPILÉE du méta-crate
+        #    `sqlx` (backend MySQL, non activé : default-features=false, features=["postgres",…]).
+        #    Il n'apparaît dans aucun graphe de build (`cargo tree -i rsa` est vide), seulement
+        #    comme entrée statique du Cargo.lock.
+        #  - Datacat ne réalise par ailleurs AUCUNE opération de clé privée RSA : le token est
+        #    vérifié par clé publique uniquement. L'attaque vise le timing des opérations de clé
+        #    privée → aucun chemin exploitable.
+        # Avis sans correctif disponible (cf. RUSTSEC-2023-0071). À revoir si `rsa` entre un jour
+        # dans le graphe de build. Les avis informationnels (unmaintained/unsound) sont signalés
+        # mais ne font pas échouer le job (comportement par défaut de cargo-audit).
+        run: cargo audit --ignore RUSTSEC-2023-0071

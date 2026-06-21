@@ -59,9 +59,6 @@ pub fn build_router(state: AppState) -> Router {
         .merge(otlp_routes)
         .layer(
             ServiceBuilder::new()
-                // Outermost : convertit tout panic d'un handler en 500 au lieu de crasher le
-                // process (disponibilité HDS). Requiert l'unwind (profil release sans panic=abort).
-                .layer(CatchPanicLayer::new())
                 .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
                 .layer(PropagateRequestIdLayer::x_request_id())
                 .layer(TraceLayer::new_for_http())
@@ -81,7 +78,6 @@ pub fn build_router(state: AppState) -> Router {
             .layer(from_fn_with_state(state.clone(), mcp_auth))
             .layer(
                 ServiceBuilder::new()
-                    .layer(CatchPanicLayer::new())
                     .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
                     .layer(PropagateRequestIdLayer::x_request_id())
                     .layer(TraceLayer::new_for_http()),
@@ -91,7 +87,12 @@ pub fn build_router(state: AppState) -> Router {
         app
     };
 
-    app.layer(cors).with_state(state)
+    // CatchPanicLayer en couche la PLUS externe (après CORS) : tout panic — d'un handler comme
+    // d'une couche intermédiaire — devient un 500 journalisé au lieu de crasher le process
+    // (disponibilité HDS ; requiert l'unwind — profil release sans panic=abort).
+    app.layer(cors)
+        .layer(CatchPanicLayer::new())
+        .with_state(state)
 }
 
 /// Middleware d'authentification du serveur MCP (`query_auth`).

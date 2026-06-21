@@ -51,6 +51,25 @@ async fn insert_metric(pool: &PgPool, name: &str, service: &str, value: f64) {
     .unwrap();
 }
 
+/// Insère un point de métrique gauge avec un `tenant_id` (pour l'isolation par tenant).
+async fn insert_metric_tenant(pool: &PgPool, name: &str, service: &str, tenant: &str, value: f64) {
+    let now = Utc::now();
+    sqlx::query(
+        "INSERT INTO metric_points \
+         (point_id, time, metric_name, metric_type, service_name, tenant_id, value_double, \
+          received_at, resource_attributes, attributes) \
+         VALUES (gen_random_uuid(), $1, $2, 'gauge', $3, $4, $5, now(), '{}'::jsonb, '{}'::jsonb)",
+    )
+    .bind(now)
+    .bind(name)
+    .bind(service)
+    .bind(tenant)
+    .bind(value)
+    .execute(pool)
+    .await
+    .unwrap();
+}
+
 /// Insère un log ERROR (severity 17) à `now` pour un service / corps donnés.
 async fn insert_log_body(pool: &PgPool, service: &str, body: &str) {
     let now = Utc::now();
@@ -599,6 +618,32 @@ async fn metric_threshold_p95_fires(pool: PgPool) {
     let n = evaluate_once(&pool, &rules, &mut state, &dispatcher, Utc::now()).await;
     assert_eq!(n, 1, "p95 au-dessus du seuil");
     assert!(recorder.alerts()[0].value > 1000.0);
+}
+
+/// Régression (revue de code) : une règle de métrique scopée à un tenant ne doit voir QUE les
+/// métriques de ce tenant — pas de fuite inter-tenant via `metric_points.tenant_id`.
+#[sqlx::test]
+async fn metric_rule_is_tenant_isolated(pool: PgPool) {
+    ensure_partitions(&pool).await;
+    // tenant "a" : valeur faible (100) ; tenant "b" : valeur très élevée (10000).
+    insert_metric_tenant(&pool, "http.server.duration", "api", "a", 100.0).await;
+    insert_metric_tenant(&pool, "http.server.duration", "api", "b", 10000.0).await;
+
+    // Règle scopée tenant=a, avg > 500. Isolée : avg(a)=100 → pas d'alerte. Sans isolation,
+    // avg(a,b)=5050 > 500 → fausse alerte.
+    let rules = parse_rules(
+        r#"{ "rules": [
+            { "name":"latence tenant a", "kind":"metric_threshold",
+              "metric_name":"http.server.duration", "tenant":"a", "agg":"avg",
+              "window_secs":300, "comparator":"gt", "threshold":500, "cooldown_secs":0 }
+        ] }"#,
+    )
+    .unwrap();
+
+    let (recorder, dispatcher, mut state) = recorder_setup();
+    let n = evaluate_once(&pool, &rules, &mut state, &dispatcher, Utc::now()).await;
+    assert_eq!(n, 0, "isolation tenant : la métrique du tenant b ne doit pas déclencher");
+    assert!(recorder.alerts().is_empty());
 }
 
 // ── Conditions avancées : composite, new-signature, anomalie ──────────────────

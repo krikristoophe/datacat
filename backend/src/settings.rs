@@ -117,7 +117,7 @@ impl Settings {
     fn from_env_fallback() -> Result<Self> {
         tracing::info!("aucun datacat.toml trouvé — configuration par variables d'environnement");
         let config = Config::from_env()?;
-        let projects = project_from_env(&config.alerting)?;
+        let projects = project_from_env(&config.alerting);
         let export = ExportSettings::from_env()?;
         Ok(Settings {
             config,
@@ -678,20 +678,34 @@ fn build_token(t: &TokenSection) -> Result<TokenConfig> {
         bail!("[token].algorithms ne doit pas être vide");
     }
 
+    // Alg d'une clé PEM : doit appartenir à la liste d'algorithmes acceptés, sinon TOUS les tokens
+    // seraient rejetés au runtime (clé jamais sélectionnée). On le détecte à la configuration.
+    let pem_alg = || -> Result<jsonwebtoken::Algorithm> {
+        let alg = parse_alg(&t.alg)?;
+        if !algorithms.contains(&alg) {
+            bail!(
+                "[token].alg = {alg:?} absent de [token].algorithms {algorithms:?} : \
+                 la clé ne serait jamais utilisée"
+            );
+        }
+        Ok(alg)
+    };
+
     let key_source = if let Some(url) = &t.jwks_url {
         Some(KeySource::Jwks { url: url.clone() })
     } else if let Some(pem) = &t.public_key_pem {
         Some(KeySource::Pem {
             pem: pem.clone(),
-            alg: parse_alg(&t.alg)?,
+            alg: pem_alg()?,
             kid: t.kid.clone(),
         })
     } else if let Some(file) = &t.public_key_file {
+        let alg = pem_alg()?;
         let pem = std::fs::read_to_string(file)
             .with_context(|| format!("lecture de [token].public_key_file = {file}"))?;
         Some(KeySource::Pem {
             pem,
-            alg: parse_alg(&t.alg)?,
+            alg,
             kid: t.kid.clone(),
         })
     } else {
@@ -768,12 +782,19 @@ fn build_export(e: &ExportSection) -> Result<ExportSettings> {
         bucket: e.bucket.clone(),
         prefix: Some(e.prefix.clone()).filter(|p| !p.is_empty()),
         region: e.region.clone(),
-        endpoint: e.endpoint.clone(),
-        access_key_id: e.access_key_id.clone(),
-        secret_access_key: e.secret_access_key.clone(),
+        // Une valeur vide (ex. `${S3_ENDPOINT:-}` non renseigné) doit valoir « non défini »,
+        // sinon `with_endpoint("")` écrase la résolution d'endpoint AWS par défaut. Idem creds.
+        endpoint: non_empty(e.endpoint.clone()),
+        access_key_id: non_empty(e.access_key_id.clone()),
+        secret_access_key: non_empty(e.secret_access_key.clone()),
         allow_http: e.allow_http,
         tables,
     })
+}
+
+/// `Some(s)` si non vide après trim, sinon `None`. Neutralise les `${VAR:-}` non renseignés.
+fn non_empty(v: Option<String>) -> Option<String> {
+    v.filter(|s| !s.trim().is_empty())
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -804,11 +825,28 @@ fn build_projects(
         paths.push(base.join(f));
     }
 
-    let mut projects = Vec::with_capacity(paths.len());
+    // Le chargement d'un projet est **résilient** : un projet invalide (règles erronées, secret
+    // manquant…) est journalisé et ignoré, mais ne doit JAMAIS empêcher l'ingestion de démarrer
+    // (l'alerting est une fonctionnalité annexe ; la disponibilité d'ingestion prime).
+    let mut projects: Vec<Project> = Vec::with_capacity(paths.len());
+    let mut seen_ids = std::collections::HashSet::new();
     for p in &paths {
-        projects.push(
-            load_project(p, global).with_context(|| format!("projet invalide {}", p.display()))?,
-        );
+        match load_project(p, global) {
+            Ok(project) => {
+                if !seen_ids.insert(project.id.clone()) {
+                    tracing::warn!(
+                        project = %project.id,
+                        file = %p.display(),
+                        "id de projet en double — projet ignoré (un seul évaluateur par id)"
+                    );
+                    continue;
+                }
+                projects.push(project);
+            }
+            Err(e) => {
+                tracing::error!(file = %p.display(), error = %e, "projet invalide — ignoré");
+            }
+        }
     }
     Ok(projects)
 }
@@ -882,15 +920,20 @@ fn email_config(e: &EmailSection) -> EmailConfig {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Construit (au plus) un projet « default » depuis l'`AlertingConfig` issue de l'environnement.
-fn project_from_env(ac: &AlertingConfig) -> Result<Vec<Project>> {
+/// **Résilient** : un fichier de règles illisible/invalide est journalisé et l'alerting est
+/// simplement désactivé — l'ingestion démarre quand même (disponibilité prioritaire).
+fn project_from_env(ac: &AlertingConfig) -> Vec<Project> {
     let Some(rules_file) = &ac.rules_file else {
-        return Ok(Vec::new());
+        return Vec::new();
     };
-    let rules = crate::alerting::load_rules(rules_file)
-        .with_context(|| format!("chargement des règles {rules_file}"))?;
-    if rules.is_empty() {
-        return Ok(Vec::new());
-    }
+    let rules = match crate::alerting::load_rules(rules_file) {
+        Ok(r) if !r.is_empty() => r,
+        Ok(_) => return Vec::new(),
+        Err(e) => {
+            tracing::error!(file = %rules_file, error = %e, "chargement des règles échoué — alerting désactivé");
+            return Vec::new();
+        }
+    };
     let email = match (&ac.smtp_host, &ac.email_from) {
         (Some(host), Some(from)) => Some(EmailConfig {
             smtp_host: host.clone(),
@@ -902,14 +945,14 @@ fn project_from_env(ac: &AlertingConfig) -> Result<Vec<Project>> {
         }),
         _ => None,
     };
-    Ok(vec![Project {
+    vec![Project {
         id: "default".into(),
         name: "default".into(),
         eval_interval: ac.eval_interval,
         rules,
         slack_webhook_url: ac.slack_webhook_url.clone(),
         email,
-    }])
+    }]
 }
 
 impl ExportSettings {
@@ -933,6 +976,11 @@ impl ExportSettings {
                 _ => None,
             })
             .collect::<Vec<_>>();
+        if tables.is_empty() {
+            bail!(
+                "EXPORT_ENABLED mais EXPORT_TABLES ne contient aucune table valide (events|logs)"
+            );
+        }
         Ok(Some(ExportSettings {
             schedule: parse_duration(
                 &std::env::var("EXPORT_SCHEDULE").unwrap_or_else(|_| "24h".into()),
@@ -940,9 +988,9 @@ impl ExportSettings {
             bucket,
             prefix: std::env::var("S3_PREFIX").ok().filter(|p| !p.is_empty()),
             region: std::env::var("S3_REGION").unwrap_or_else(|_| "eu-west-1".into()),
-            endpoint: std::env::var("S3_ENDPOINT").ok(),
-            access_key_id: std::env::var("AWS_ACCESS_KEY_ID").ok(),
-            secret_access_key: std::env::var("AWS_SECRET_ACCESS_KEY").ok(),
+            endpoint: non_empty(std::env::var("S3_ENDPOINT").ok()),
+            access_key_id: non_empty(std::env::var("AWS_ACCESS_KEY_ID").ok()),
+            secret_access_key: non_empty(std::env::var("AWS_SECRET_ACCESS_KEY").ok()),
             allow_http: std::env::var("S3_ALLOW_HTTP")
                 .map(|v| v.eq_ignore_ascii_case("true") || v == "1")
                 .unwrap_or(false),

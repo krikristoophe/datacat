@@ -189,8 +189,10 @@ fn default_severity() -> String {
 
 /// Une règle d'alerting. Beaucoup de champs sont conditionnels au `kind` (cf. `validate`).
 /// `Default` n'est fourni que pour la construction en test ; la désérialisation exige toujours
-/// `name`, `kind`, `window_secs`, `comparator`, `threshold`.
+/// `name`, `kind`, `window_secs`, `comparator`, `threshold`. `deny_unknown_fields` rejette les
+/// fautes de frappe (ex. `treshold`) au lieu de les ignorer silencieusement (config écrite à la main).
 #[derive(Debug, Clone, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Rule {
     /// Nom lisible (apparaît dans la notification et identifie l'état de la règle). Requis pour
     /// une règle de premier niveau ; omis pour une sous-condition de `composite`.

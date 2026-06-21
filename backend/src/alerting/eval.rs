@@ -478,12 +478,11 @@ fn push_base_filter(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule
     push_tenant_filter(qb, rule);
 }
 
-/// Filtre `tenant_id` pour les sources qui portent un tenant (logs/spans/events ; metrics non).
+/// Filtre `tenant_id`. Toutes les sources (logs/spans/events/metrics) portent une colonne
+/// `tenant_id` — l'isolation par projet (tenant) s'applique donc à chacune.
 fn push_tenant_filter(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule) {
     if let Some(t) = &rule.tenant {
-        if matches!(rule.source, Source::Logs | Source::Spans | Source::Events) {
-            qb.push(" AND tenant_id = ").push_bind(t.clone());
-        }
+        qb.push(" AND tenant_id = ").push_bind(t.clone());
     }
 }
 
@@ -564,6 +563,7 @@ async fn compute_metric(
         if let Some(s) = &rule.service {
             qb.push(" AND service_name = ").push_bind(s.clone());
         }
+        push_tenant_filter(&mut qb, rule);
         qb.push(" ORDER BY time DESC LIMIT 1");
         qb.build_query_scalar().fetch_optional(pool).await?
     } else {
@@ -572,6 +572,7 @@ async fn compute_metric(
         if let Some(s) = &rule.service {
             qb.push(" AND service_name = ").push_bind(s.clone());
         }
+        push_tenant_filter(&mut qb, rule);
         qb.build_query_scalar().fetch_optional(pool).await?
     };
     // Aucune donnée sur la fenêtre → 0.0 (pas de déclenchement pour gt/gte usuels).

@@ -400,21 +400,27 @@ async fn run_export_loop(
                 break;
             }
             _ = ticker.tick() => {
-                // Exporte la veille (dernier jour UTC complet).
-                let date = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
+                // Réexporte une petite fenêtre de jours UTC complets (J-1 et J-2) à chaque tick.
+                // L'export est idempotent (écrase l'objet du jour) : ce recouvrement garantit
+                // qu'aucun jour n'est sauté même si un tick est manqué (process arrêté autour de
+                // minuit, intervalle non aligné sur l'horloge). cf. revue de code.
+                let now = chrono::Utc::now();
                 let prefix = export.prefix.as_deref();
-                for table in &export.tables {
-                    let result = match table {
-                        ExportTable::Events => {
-                            datacat_exporter::export::export_events(&pool, &store, date, &export.bucket, prefix).await
+                for back in 1..=2i64 {
+                    let date = (now - chrono::Duration::days(back)).date_naive();
+                    for table in &export.tables {
+                        let result = match table {
+                            ExportTable::Events => {
+                                datacat_exporter::export::export_events(&pool, &store, date, &export.bucket, prefix).await
+                            }
+                            ExportTable::Logs => {
+                                datacat_exporter::export::export_logs(&pool, &store, date, &export.bucket, prefix).await
+                            }
+                        };
+                        match result {
+                            Ok(rows) => tracing::info!(?table, %date, rows, "export froid terminé"),
+                            Err(e) => tracing::error!(?table, %date, error = %e, "export froid échoué"),
                         }
-                        ExportTable::Logs => {
-                            datacat_exporter::export::export_logs(&pool, &store, date, &export.bucket, prefix).await
-                        }
-                    };
-                    match result {
-                        Ok(rows) => tracing::info!(?table, %date, rows, "export froid terminé"),
-                        Err(e) => tracing::error!(?table, %date, error = %e, "export froid échoué"),
                     }
                 }
             }

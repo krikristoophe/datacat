@@ -29,6 +29,14 @@ pub struct Settings {
     pub projects: Vec<Project>,
     /// Export froid planifié (si configuré et activé).
     pub export: Option<ExportSettings>,
+    /// Surveillance des nœuds companion (heartbeat → alerte si silencieux).
+    pub companions: CompanionMonitor,
+}
+
+/// Paramètres du moniteur de companions.
+pub struct CompanionMonitor {
+    pub check_interval: Duration,
+    pub expected: Vec<crate::companion::ExpectedCompanion>,
 }
 
 /// Un projet supervisé : ses règles d'alerting + ses canaux de notification.
@@ -105,11 +113,13 @@ impl Settings {
             Some(e) if e.enabled => Some(build_export(e)?),
             _ => None,
         };
+        let companions = build_companions(&file.companions)?;
 
         Ok(Settings {
             config,
             projects,
             export,
+            companions,
         })
     }
 
@@ -123,6 +133,10 @@ impl Settings {
             config,
             projects,
             export,
+            companions: CompanionMonitor {
+                check_interval: Duration::from_secs(30),
+                expected: Vec::new(),
+            },
         })
     }
 }
@@ -207,6 +221,38 @@ struct FileConfig {
     export: Option<ExportSection>,
     notifications: NotificationsSection,
     projects: ProjectsSection,
+    companions: CompanionsSection,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct CompanionsSection {
+    /// Intervalle de vérification de la fraîcheur des heartbeats.
+    check_interval: String,
+    /// Companions attendus (chacun lève une alerte s'il devient silencieux).
+    expected: Vec<CompanionEntry>,
+}
+impl Default for CompanionsSection {
+    fn default() -> Self {
+        Self {
+            check_interval: "30s".into(),
+            expected: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CompanionEntry {
+    id: String,
+    /// Silence supérieur à cette durée ⇒ alerte.
+    timeout: String,
+    #[serde(default = "default_companion_severity")]
+    severity: String,
+}
+
+fn default_companion_severity() -> String {
+    "critical".to_string()
 }
 
 #[derive(Debug, Deserialize)]
@@ -772,6 +818,24 @@ fn build_export(e: &ExportSection) -> Result<ExportSettings> {
 /// `Some(s)` si non vide après trim, sinon `None`. Neutralise les `${VAR:-}` non renseignés.
 fn non_empty(v: Option<String>) -> Option<String> {
     v.filter(|s| !s.trim().is_empty())
+}
+
+fn build_companions(s: &CompanionsSection) -> Result<CompanionMonitor> {
+    let mut expected = Vec::with_capacity(s.expected.len());
+    for e in &s.expected {
+        if e.id.trim().is_empty() {
+            bail!("[[companions.expected]] : champ `id` requis");
+        }
+        expected.push(crate::companion::ExpectedCompanion {
+            id: e.id.clone(),
+            timeout: dur(&e.timeout, "companions.expected.timeout")?,
+            severity: e.severity.clone(),
+        });
+    }
+    Ok(CompanionMonitor {
+        check_interval: dur(&s.check_interval, "companions.check_interval")?,
+        expected,
+    })
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

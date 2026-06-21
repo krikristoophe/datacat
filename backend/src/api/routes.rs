@@ -326,5 +326,33 @@ pub async fn stats(
             "tracked_ips": state.limiter.tracked_ips(),
         },
         "anomaly": { "banned_ips": state.anomaly.banned_count() },
+        "companions": state.companions.snapshot().iter().map(|(id, t)| {
+            json!({ "id": id, "last_seen": t.to_rfc3339() })
+        }).collect::<Vec<_>>(),
     })))
+}
+
+/// Heartbeat d'un nœud companion distant (`POST /v1/heartbeat`). Auth service-à-service (logs_auth).
+#[derive(serde::Deserialize)]
+pub struct Heartbeat {
+    pub id: String,
+}
+
+pub async fn heartbeat(
+    State(state): State<AppState>,
+    headers: axum::http::HeaderMap,
+    axum::Json(hb): axum::Json<Heartbeat>,
+) -> AppResult<impl IntoResponse> {
+    security::check_service_token(
+        &state.config.logs_auth,
+        &state.verifier,
+        crate::query::routes::bearer(&headers).as_deref(),
+    )
+    .map_err(AppError::Unauthorized)?;
+    let id = hb.id.trim();
+    if id.is_empty() {
+        return Err(AppError::bad_request("companion id requis"));
+    }
+    state.companions.record(id, Utc::now());
+    Ok(axum::http::StatusCode::NO_CONTENT)
 }

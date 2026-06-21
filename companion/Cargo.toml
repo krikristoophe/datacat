@@ -1,0 +1,50 @@
+[workspace]
+
+[package]
+name = "datacat-companion"
+version = "0.1.0"
+edition = "2021"
+license = "Proprietary"
+rust-version = "1.80"
+description = "Datacat — remote companion agent (heartbeat + self-alert half of the bidirectional dead-man's-switch)"
+publish = false
+
+[[bin]]
+name = "datacat-companion"
+path = "src/main.rs"
+
+[lib]
+name = "datacat_companion"
+path = "src/lib.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time", "signal"] }
+
+# HTTP client — TLS via rustls (no openssl), JSON bodies.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
+# Serde / JSON
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# TOML config
+toml = "0.8"
+
+# Error handling
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }
+# Tiny local HTTP mock for integration tests (mirrors the backend's axum-based tests).
+axum = "0.7"
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

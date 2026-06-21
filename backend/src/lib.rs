@@ -9,6 +9,7 @@
 
 pub mod alerting;
 pub mod api;
+pub mod companion;
 pub mod config;
 pub mod db;
 pub mod error;
@@ -57,4 +58,6 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub pool: PgPool,
     pub ready: Arc<AtomicBool>,
+    /// Liveness registry of remote companion nodes (heartbeat endpoint + monitor).
+    pub companions: Arc<companion::CompanionRegistry>,
 }

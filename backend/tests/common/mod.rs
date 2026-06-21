@@ -341,6 +341,7 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
         config: Arc::clone(&cfg),
         pool: pool.clone(),
         ready: Arc::new(AtomicBool::new(true)),
+        companions: Arc::new(datacat_ingest::companion::CompanionRegistry::default()),
     };
 
     // Serveur OTLP/gRPC (logs + traces) sur un port éphémère, partageant l'AppState.

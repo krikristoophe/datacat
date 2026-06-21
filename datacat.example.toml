@@ -89,3 +89,18 @@ tables = ["events", "logs"]
 [projects]
 dir = "projects"
 # files = ["projects/billing.toml", "projects/web.toml"]
+
+# Surveillance des nœuds COMPANION distants (dead man's switch). Chaque companion envoie un
+# heartbeat à `POST /v1/heartbeat` (auth = [auth.logs]). S'il devient silencieux plus que son
+# `timeout`, une alerte est levée via les canaux [notifications] globaux (et résolue à son retour).
+# Le binaire `datacat-companion` (crate `companion/`) tourne sur le nœud distant et lève sa PROPRE
+# alerte s'il ne joint plus ce serveur.
+[companions]
+check_interval = "30s"
+# [[companions.expected]]
+# id = "edge-eu"
+# timeout = "90s"
+# severity = "critical"
+# [[companions.expected]]
+# id = "edge-us"
+# timeout = "90s"

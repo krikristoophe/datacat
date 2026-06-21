@@ -30,11 +30,13 @@ async fn main() -> Result<()> {
         config,
         projects,
         export,
+        companions,
     } = Settings::load()?;
     // Garde-fous production : refuse les relâchements dev-only (CORS `*`, token désactivé) sauf
     // build `--features dev`.
     config.enforce_runtime_guards()?;
     let config = Arc::new(config);
+    let companion_registry = Arc::new(datacat_ingest::companion::CompanionRegistry::default());
 
     // --- Base de données : connexion, migrations, partitions ---
     let pool = db::connect(&config.database_url, config.db_max_connections).await?;
@@ -137,6 +139,7 @@ async fn main() -> Result<()> {
         config: Arc::clone(&config),
         pool: pool.clone(),
         ready: Arc::new(AtomicBool::new(true)),
+        companions: Arc::clone(&companion_registry),
     };
 
     // --- Signal d'arrêt diffusé à tous les serveurs (HTTP + gRPC + alerting) ---
@@ -151,6 +154,14 @@ async fn main() -> Result<()> {
 
     // --- Export froid planifié (optionnel, feature `export`) ---
     spawn_export(pool.clone(), export, sd_rx.clone());
+
+    // --- Surveillance des companions distants (heartbeat → alerte si silencieux) ---
+    spawn_companion_monitor(
+        Arc::clone(&config),
+        companion_registry,
+        companions,
+        sd_rx.clone(),
+    );
 
     // --- Serveur OTLP/gRPC (logs), optionnel ---
     let grpc_handle = if config.grpc_enabled {
@@ -338,6 +349,72 @@ fn spawn_project_alerting(
         project.rules,
         dispatcher,
         project.eval_interval,
+        shutdown,
+    ));
+}
+
+/// Construit les notifiers à partir des canaux de notification globaux (`[notifications]`).
+/// Partagé par le moniteur de companions.
+fn global_notifiers(
+    ac: &datacat_ingest::config::AlertingConfig,
+    http: &reqwest::Client,
+) -> Vec<Arc<dyn datacat_ingest::alerting::Notifier>> {
+    use datacat_ingest::alerting::{EmailConfig, EmailNotifier, Notifier, SlackNotifier};
+    let mut notifiers: Vec<Arc<dyn Notifier>> = Vec::new();
+    if let (Some(token), Some(channel)) = (&ac.slack_bot_token, &ac.slack_channel) {
+        notifiers.push(Arc::new(SlackNotifier::new(
+            http.clone(),
+            token.clone(),
+            channel.clone(),
+        )));
+    }
+    if let (Some(host), Some(from)) = (&ac.smtp_host, &ac.email_from) {
+        if !ac.email_to.is_empty() {
+            match EmailNotifier::new(&EmailConfig {
+                smtp_host: host.clone(),
+                smtp_port: ac.smtp_port,
+                username: ac.smtp_username.clone(),
+                password: ac.smtp_password.clone(),
+                from: from.clone(),
+                to: ac.email_to.clone(),
+            }) {
+                Ok(n) => notifiers.push(Arc::new(n)),
+                Err(e) => {
+                    tracing::error!(error = %e, "config e-mail globale invalide — canal ignoré")
+                }
+            }
+        }
+    }
+    notifiers
+}
+
+/// Démarre le moniteur de companions si des companions sont attendus ET qu'un canal global existe.
+fn spawn_companion_monitor(
+    config: Arc<Config>,
+    registry: Arc<datacat_ingest::companion::CompanionRegistry>,
+    monitor: datacat_ingest::settings::CompanionMonitor,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    if monitor.expected.is_empty() {
+        return;
+    }
+    let http = reqwest::Client::new();
+    let notifiers = global_notifiers(&config.alerting, &http);
+    if notifiers.is_empty() {
+        tracing::warn!(
+            "companions configurés mais aucun canal de notification global ([notifications]) — moniteur désactivé"
+        );
+        return;
+    }
+    tracing::info!(
+        companions = monitor.expected.len(),
+        "moniteur de companions activé"
+    );
+    tokio::spawn(datacat_ingest::companion::run_monitor_loop(
+        registry,
+        monitor.expected,
+        notifiers,
+        monitor.check_interval,
         shutdown,
     ));
 }

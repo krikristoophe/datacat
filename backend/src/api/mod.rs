@@ -37,6 +37,7 @@ pub fn build_router(state: AppState) -> Router {
 
     let app = Router::new()
         .route("/v1/events", post(routes::ingest_events))
+        .route("/v1/heartbeat", post(routes::heartbeat))
         .route("/healthz", get(routes::healthz))
         .route("/readyz", get(routes::readyz))
         .route("/stats", get(routes::stats))

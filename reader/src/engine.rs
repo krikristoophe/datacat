@@ -93,6 +93,13 @@ impl ColdReader {
                 .with_context(|| format!("creating ListingTable for '{table}'"))?,
         );
 
+        // Deregister any existing table with this name before (re-)registering.
+        // This is idempotent and allows calling register_table multiple times
+        // for the same table with different date filters.
+        if self.ctx.table_exist(table)? {
+            self.ctx.deregister_table(table)?;
+        }
+
         self.ctx
             .register_table(table, listing_table)
             .with_context(|| format!("registering table '{table}' in DataFusion context"))?;

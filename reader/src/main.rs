@@ -65,7 +65,9 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let cfg = ColdConfig::from_env().context("loading config from environment")?;
-    let reader = ColdReader::new(cfg).await.context("initialising ColdReader")?;
+    let reader = ColdReader::new(cfg)
+        .await
+        .context("initialising ColdReader")?;
 
     let batches = if let Some(date) = &cli.date {
         reader

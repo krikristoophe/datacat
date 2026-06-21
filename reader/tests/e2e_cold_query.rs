@@ -12,15 +12,38 @@
 //!   5. Exécute la requête "séquences par session" et vérifie le format.
 
 use anyhow::Context;
-use arrow::array::{Int64Array, StringArray, StringBuilder, TimestampMicrosecondArray};
+use arrow::array::{
+    Array, Int64Array, LargeStringArray, StringArray, StringBuilder, StringViewArray,
+    TimestampMicrosecondArray,
+};
 use arrow::record_batch::RecordBatch;
 use bytes::Bytes;
 use datacat_reader::{config::build_object_store, ColdConfig, ColdReader};
-use object_store::{path::Path, ObjectStore};
+use object_store::{path::Path, ObjectStoreExt as _, PutPayload};
 use parquet::arrow::ArrowWriter;
 use parquet::basic::{Compression, ZstdLevel};
 use parquet::file::properties::WriterProperties;
 use std::sync::Arc;
+
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Extracts string values from a column that may be `StringArray`,
+/// `LargeStringArray`, or `StringViewArray` (DataFusion 54 uses Utf8View
+/// internally for string aggregation results).
+fn get_string_values(col: &dyn Array) -> Vec<String> {
+    if let Some(arr) = col.as_any().downcast_ref::<StringArray>() {
+        (0..arr.len()).map(|i| arr.value(i).to_string()).collect()
+    } else if let Some(arr) = col.as_any().downcast_ref::<LargeStringArray>() {
+        (0..arr.len()).map(|i| arr.value(i).to_string()).collect()
+    } else if let Some(arr) = col.as_any().downcast_ref::<StringViewArray>() {
+        (0..arr.len()).map(|i| arr.value(i).to_string()).collect()
+    } else {
+        panic!(
+            "expected StringArray, LargeStringArray, or StringViewArray, got {:?}",
+            col.data_type()
+        )
+    }
+}
 
 // ─── Constantes ──────────────────────────────────────────────────────────────
 
@@ -88,12 +111,10 @@ fn make_events_parquet() -> anyhow::Result<Bytes> {
         properties_b.append_value(format!(r#"{{"idx":{i}}}"#));
     }
 
-    let ts_client_arr = Arc::new(
-        TimestampMicrosecondArray::from(ts_client).with_timezone("UTC".to_string()),
-    );
-    let received_at_arr = Arc::new(
-        TimestampMicrosecondArray::from(received_at).with_timezone("UTC".to_string()),
-    );
+    let ts_client_arr =
+        Arc::new(TimestampMicrosecondArray::from(ts_client).with_timezone("UTC".to_string()));
+    let received_at_arr =
+        Arc::new(TimestampMicrosecondArray::from(received_at).with_timezone("UTC".to_string()));
 
     let batch = RecordBatch::try_new(
         schema.clone(),
@@ -145,17 +166,15 @@ async fn create_minio_bucket(bucket: &str) -> anyhow::Result<()> {
     let canonical_headers =
         format!("host:{host}\nx-amz-content-sha256:{payload_hash}\nx-amz-date:{amz_date}\n");
     let signed_headers = "host;x-amz-content-sha256;x-amz-date";
-    let canonical_request = format!(
-        "PUT\n{uri}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}"
-    );
+    let canonical_request =
+        format!("PUT\n{uri}\n\n{canonical_headers}\n{signed_headers}\n{payload_hash}");
     let credential_scope = format!("{date_stamp}/{region}/{service}/aws4_request");
     let cr_hash = {
         let mut h = Sha256::new();
         h.update(canonical_request.as_bytes());
         format!("{:x}", h.finalize())
     };
-    let string_to_sign =
-        format!("AWS4-HMAC-SHA256\n{amz_date}\n{credential_scope}\n{cr_hash}");
+    let string_to_sign = format!("AWS4-HMAC-SHA256\n{amz_date}\n{credential_scope}\n{cr_hash}");
 
     let k_date = {
         let mut m =
@@ -232,7 +251,7 @@ async fn test_cold_query_end_to_end() -> anyhow::Result<()> {
     let path = Path::from(s3_key.as_str());
 
     store
-        .put(&path, parquet_bytes.clone().into())
+        .put(&path, PutPayload::from_bytes(parquet_bytes.clone()))
         .await
         .with_context(|| format!("uploading Parquet to s3://{TEST_BUCKET}/{s3_key}"))?;
 
@@ -260,10 +279,7 @@ async fn test_cold_query_end_to_end() -> anyhow::Result<()> {
         .expect("total must be Int64Array")
         .value(0);
     eprintln!("COUNT(*) = {count_val}");
-    assert_eq!(
-        count_val, N_EVENTS as i64,
-        "COUNT(*) must equal {N_EVENTS}"
-    );
+    assert_eq!(count_val, N_EVENTS as i64, "COUNT(*) must equal {N_EVENTS}");
 
     // ── 6. Requête : GROUP BY event_name ─────────────────────────────────────
     eprintln!("Running: GROUP BY event_name");
@@ -291,22 +307,16 @@ async fn test_cold_query_end_to_end() -> anyhow::Result<()> {
     let event_name_col = first_batch
         .column_by_name("event_name")
         .expect("event_name column missing");
-    let event_name_arr = event_name_col
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("event_name must be StringArray");
+    let event_names = get_string_values(event_name_col.as_ref());
 
-    let n_col = first_batch
-        .column_by_name("n")
-        .expect("n column missing");
+    let n_col = first_batch.column_by_name("n").expect("n column missing");
     let n_arr = n_col
         .as_any()
         .downcast_ref::<Int64Array>()
         .expect("n must be Int64Array");
 
     let mut total_from_groups: i64 = 0;
-    for i in 0..group_rows {
-        let name = event_name_arr.value(i);
+    for (i, name) in event_names.iter().enumerate() {
         let count = n_arr.value(i);
         eprintln!("  {name}: {count}");
         assert!(name.starts_with("event_"), "unexpected event_name: {name}");
@@ -348,14 +358,10 @@ async fn test_cold_query_end_to_end() -> anyhow::Result<()> {
     let session_id_col = sess_batch
         .column_by_name("session_id")
         .expect("session_id column missing");
-    let session_id_arr = session_id_col
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .expect("session_id must be StringArray");
+    let session_ids = get_string_values(session_id_col.as_ref());
 
     eprintln!("Session sequences:");
-    for i in 0..session_rows {
-        let sid = session_id_arr.value(i);
+    for sid in &session_ids {
         eprintln!("  {sid}");
         assert!(sid.starts_with("session-"), "unexpected session_id: {sid}");
     }

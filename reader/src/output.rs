@@ -6,18 +6,13 @@ use arrow::util::pretty::pretty_format_batches;
 use datafusion::arrow::record_batch::RecordBatch;
 
 /// Format de sortie des résultats.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
 pub enum OutputFormat {
     /// Tableau ASCII lisible (défaut).
+    #[default]
     Table,
     /// Tableau JSON (une ligne, tableau d'objets).
     Json,
-}
-
-impl Default for OutputFormat {
-    fn default() -> Self {
-        Self::Table
-    }
 }
 
 /// Affiche les `RecordBatch` sur stdout selon le format choisi.

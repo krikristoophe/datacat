@@ -97,6 +97,30 @@ jobs:
       # En CI on ne le lance pas pour garder un job rapide et sans dépendances Docker.
       # Pour exécuter le test e2e en local : cd exporter && ./run-tests.sh
 
+  reader:
+    name: Reader (Rust — build + clippy + fmt)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: reader
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: reader -> target
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: RUSTFLAGS="-D warnings" cargo clippy --all-targets
+      - name: Build
+        run: cargo build --release
+      # Le test e2e (test_cold_query_end_to_end) nécessite MinIO (Docker).
+      # Il s'exécute en local via reader/run-tests.sh.
+      # En CI on ne le lance pas pour garder un job rapide sans dépendances Docker.
+
   audit:
     name: Audit des dépendances (RustSec)
     runs-on: ubuntu-latest

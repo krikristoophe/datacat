@@ -256,7 +256,8 @@ fn spawn_maintenance(
 /// Démarre le moteur d'alerting si configuré (fichier de règles + ≥1 notifier). No-op sinon.
 fn spawn_alerting(pool: PgPool, config: Arc<Config>, shutdown: tokio::sync::watch::Receiver<bool>) {
     use datacat_ingest::alerting::{
-        run_eval_loop, EmailConfig, EmailNotifier, Notifier, SlackNotifier,
+        run_eval_loop, DispatchSettings, Dispatcher, EmailConfig, EmailNotifier, Notifier,
+        SlackNotifier,
     };
 
     let ac = &config.alerting;
@@ -264,12 +265,6 @@ fn spawn_alerting(pool: PgPool, config: Arc<Config>, shutdown: tokio::sync::watc
         tracing::info!("alerting désactivé (ALERT_RULES_FILE non défini)");
         return;
     };
-    if !ac.has_notifier() {
-        tracing::warn!(
-            "ALERT_RULES_FILE défini mais aucun notifier configuré — alerting désactivé"
-        );
-        return;
-    }
     let rules = match datacat_ingest::alerting::load_rules(&rules_file) {
         Ok(r) if !r.is_empty() => r,
         Ok(_) => {
@@ -282,39 +277,58 @@ fn spawn_alerting(pool: PgPool, config: Arc<Config>, shutdown: tokio::sync::watc
         }
     };
 
-    let mut notifiers: Vec<Arc<dyn Notifier>> = Vec::new();
-    if let Some(url) = ac.slack_webhook_url.clone() {
-        notifiers.push(Arc::new(SlackNotifier::new(url)));
+    // Une règle peut porter ses propres `actions` (webhook/slack/email) : dans ce cas l'alerting
+    // est utile même sans notifier global configuré.
+    let has_actions = rules.iter().any(|r| !r.actions.is_empty());
+    if !ac.has_notifier() && !has_actions {
+        tracing::warn!(
+            "ALERT_RULES_FILE défini mais aucun notifier global ni action de règle — alerting désactivé"
+        );
+        return;
     }
-    if let (Some(host), Some(from)) = (ac.smtp_host.clone(), ac.email_from.clone()) {
-        if !ac.email_to.is_empty() {
-            match EmailNotifier::new(&EmailConfig {
-                smtp_host: host,
-                smtp_port: ac.smtp_port,
-                username: ac.smtp_username.clone(),
-                password: ac.smtp_password.clone(),
-                from,
-                to: ac.email_to.clone(),
-            }) {
-                Ok(n) => notifiers.push(Arc::new(n)),
+
+    // Client HTTP partagé par tous les canaux (Slack + webhooks génériques).
+    let http = reqwest::Client::new();
+
+    // Configuration SMTP de base (repli des actions `email`, et notifier e-mail global).
+    let email_base = match (ac.smtp_host.clone(), ac.email_from.clone()) {
+        (Some(host), Some(from)) => Some(EmailConfig {
+            smtp_host: host,
+            smtp_port: ac.smtp_port,
+            username: ac.smtp_username.clone(),
+            password: ac.smtp_password.clone(),
+            from,
+            to: ac.email_to.clone(),
+        }),
+        _ => None,
+    };
+
+    // Notifiers globaux par défaut (règles sans `actions`).
+    let mut default: Vec<Arc<dyn Notifier>> = Vec::new();
+    if let Some(url) = ac.slack_webhook_url.clone() {
+        default.push(Arc::new(SlackNotifier::with_client(http.clone(), url)));
+    }
+    if let Some(base) = &email_base {
+        if !base.to.is_empty() {
+            match EmailNotifier::new(base) {
+                Ok(n) => default.push(Arc::new(n)),
                 Err(e) => {
                     tracing::error!(error = %e, "configuration e-mail invalide — canal ignoré")
                 }
             }
         }
     }
-    if notifiers.is_empty() {
-        tracing::warn!("aucun notifier valide — alerting désactivé");
-        return;
-    }
+
+    let settings = DispatchSettings {
+        http,
+        slack_webhook_url: ac.slack_webhook_url.clone(),
+        email: email_base,
+    };
+    let dispatcher = Dispatcher::build(&rules, &settings, default);
 
     let interval = ac.eval_interval;
-    tracing::info!(
-        rules = rules.len(),
-        notifiers = notifiers.len(),
-        "alerting activé"
-    );
-    tokio::spawn(run_eval_loop(pool, rules, notifiers, interval, shutdown));
+    tracing::info!(rules = rules.len(), "alerting activé");
+    tokio::spawn(run_eval_loop(pool, rules, dispatcher, interval, shutdown));
 }
 
 /// Attend Ctrl-C ou SIGTERM pour déclencher l'arrêt propre.

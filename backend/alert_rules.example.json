@@ -1,0 +1,60 @@
+{
+  "rules": [
+    {
+      "name": "erreurs billing (volume)",
+      "kind": "log_count",
+      "service": "billing",
+      "severity_min": 17,
+      "window_secs": 300,
+      "comparator": "gt",
+      "threshold": 10,
+      "cooldown_secs": 600,
+      "severity": "critical"
+    },
+    {
+      "name": "5 erreurs identiques -> webhook + slack",
+      "kind": "log_group_count",
+      "severity_min": 17,
+      "group_by": "body",
+      "window_secs": 300,
+      "comparator": "gte",
+      "threshold": 5,
+      "cooldown_secs": 300,
+      "severity": "critical",
+      "actions": [
+        {
+          "type": "webhook",
+          "url": "https://hooks.internal.example/datacat-alert",
+          "headers": { "Authorization": "Bearer change-me" }
+        },
+        { "type": "slack" }
+      ]
+    },
+    {
+      "name": "erreurs par code applicatif",
+      "kind": "log_group_count",
+      "group_by": "attr:error.code",
+      "severity_min": 17,
+      "window_secs": 600,
+      "comparator": "gte",
+      "threshold": 20,
+      "cooldown_secs": 600,
+      "severity": "warning"
+    },
+    {
+      "name": "latence api (p moyenne)",
+      "kind": "metric_threshold",
+      "metric_name": "http.server.duration",
+      "service": "api",
+      "agg": "avg",
+      "window_secs": 300,
+      "comparator": "gt",
+      "threshold": 500,
+      "cooldown_secs": 600,
+      "severity": "warning",
+      "actions": [
+        { "type": "email", "to": ["oncall@example.com"] }
+      ]
+    }
+  ]
+}

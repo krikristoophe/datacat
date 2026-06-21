@@ -3,12 +3,15 @@
 //! Le moteur d'évaluation est agnostique du canal : il reçoit un `Vec<Arc<dyn Notifier>>` et
 //! diffuse chaque transition sur tous les canaux configurés.
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
 use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
+
+use crate::alerting::rules::{Action, Rule};
 
 /// État d'une alerte (transition de la machine à états par règle).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,20 +42,42 @@ pub struct Alert {
     pub threshold: f64,
     /// Description lisible (ex. `avg(http.server.duration) > 500 over 300s`).
     pub description: String,
+    /// Clé du groupe pour les règles `log_group_count` (ex. le message d'erreur identique).
+    pub group_key: Option<String>,
 }
 
 impl Alert {
     /// Message texte mono-ligne (corps Slack, sujet e-mail).
     pub fn summary(&self) -> String {
+        let grp = self
+            .group_key
+            .as_deref()
+            .map(|g| format!(" [{g}]"))
+            .unwrap_or_default();
         format!(
-            "[{}] {} ({}) — {} (valeur={:.4}, seuil={:.4})",
+            "[{}] {} ({}){} — {} (valeur={:.4}, seuil={:.4})",
             self.state.label(),
             self.rule_name,
             self.severity,
+            grp,
             self.description,
             self.value,
             self.threshold
         )
+    }
+
+    /// Charge utile JSON (webhook générique).
+    pub fn payload(&self) -> serde_json::Value {
+        serde_json::json!({
+            "rule": self.rule_name,
+            "severity": self.severity,
+            "state": self.state.label(),
+            "value": self.value,
+            "threshold": self.threshold,
+            "description": self.description,
+            "group_key": self.group_key,
+            "summary": self.summary(),
+        })
     }
 }
 
@@ -72,8 +97,11 @@ pub struct SlackNotifier {
 
 impl SlackNotifier {
     pub fn new(webhook_url: String) -> Self {
+        Self::with_client(reqwest::Client::new(), webhook_url)
+    }
+    pub fn with_client(client: reqwest::Client, webhook_url: String) -> Self {
         Self {
-            client: reqwest::Client::new(),
+            client,
             webhook_url,
         }
     }
@@ -173,6 +201,154 @@ impl Notifier for EmailNotifier {
     }
 }
 
+// ── Webhook HTTP générique ────────────────────────────────────────────────────
+
+/// POST la charge utile JSON de l'alerte ([`Alert::payload`]) sur une URL arbitraire, avec
+/// des en-têtes optionnels (ex. `Authorization`). Brique de base du système d'actions modulable.
+pub struct WebhookNotifier {
+    client: reqwest::Client,
+    url: String,
+    headers: HashMap<String, String>,
+}
+
+impl WebhookNotifier {
+    pub fn new(client: reqwest::Client, url: String, headers: HashMap<String, String>) -> Self {
+        Self {
+            client,
+            url,
+            headers,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl Notifier for WebhookNotifier {
+    async fn send(&self, alert: &Alert) -> Result<()> {
+        let mut req = self.client.post(&self.url).json(&alert.payload());
+        for (k, v) in &self.headers {
+            req = req.header(k, v);
+        }
+        let resp = req.send().await.context("POST du webhook")?;
+        if !resp.status().is_success() {
+            anyhow::bail!("webhook a répondu {}", resp.status());
+        }
+        Ok(())
+    }
+}
+
+// ── Dispatcher (actions modulables par règle) ─────────────────────────────────
+
+/// Réglages globaux servant de repli pour résoudre les `actions` d'une règle (un webhook Slack
+/// par défaut, une configuration SMTP de base). Le client HTTP est partagé entre tous les canaux.
+#[derive(Clone, Default)]
+pub struct DispatchSettings {
+    pub http: reqwest::Client,
+    /// Webhook Slack global (`SLACK_WEBHOOK_URL`) — repli des actions `slack` sans `webhook_url`.
+    pub slack_webhook_url: Option<String>,
+    /// Configuration SMTP de base — repli des actions `email` (le `to` peut être surchargé).
+    pub email: Option<EmailConfig>,
+}
+
+/// Aiguille chaque règle vers les notifiers à déclencher : ses `actions` résolues si elle en a,
+/// sinon les notifiers globaux par défaut. La résolution est faite une fois à la construction.
+pub struct Dispatcher {
+    /// Notifiers utilisés pour une règle sans `actions`.
+    default: Vec<Arc<dyn Notifier>>,
+    /// Notifiers résolus par nom de règle (règles avec `actions`).
+    per_rule: HashMap<String, Vec<Arc<dyn Notifier>>>,
+}
+
+impl Dispatcher {
+    /// Dispatcher trivial : un seul jeu de notifiers pour toutes les règles (tests, ou aucune
+    /// règle n'utilise `actions`).
+    pub fn with_defaults(default: Vec<Arc<dyn Notifier>>) -> Self {
+        Self {
+            default,
+            per_rule: HashMap::new(),
+        }
+    }
+
+    /// Construit le dispatcher en résolvant les `actions` de chaque règle (repli sur `settings`),
+    /// avec `default` comme repli pour les règles sans actions.
+    pub fn build(
+        rules: &[Rule],
+        settings: &DispatchSettings,
+        default: Vec<Arc<dyn Notifier>>,
+    ) -> Self {
+        let mut per_rule = HashMap::new();
+        for rule in rules {
+            if rule.actions.is_empty() {
+                continue;
+            }
+            let mut notifiers: Vec<Arc<dyn Notifier>> = Vec::new();
+            for action in &rule.actions {
+                Self::resolve_action(&rule.name, action, settings, &mut notifiers);
+            }
+            per_rule.insert(rule.name.clone(), notifiers);
+        }
+        Self { default, per_rule }
+    }
+
+    fn resolve_action(
+        rule_name: &str,
+        action: &Action,
+        settings: &DispatchSettings,
+        out: &mut Vec<Arc<dyn Notifier>>,
+    ) {
+        match action {
+            Action::Slack { webhook_url } => {
+                match webhook_url
+                    .clone()
+                    .or_else(|| settings.slack_webhook_url.clone())
+                {
+                    Some(url) => out.push(Arc::new(SlackNotifier::with_client(
+                        settings.http.clone(),
+                        url,
+                    ))),
+                    None => tracing::warn!(
+                        rule = %rule_name,
+                        "action slack sans webhook_url ni SLACK_WEBHOOK_URL — ignorée"
+                    ),
+                }
+            }
+            Action::Email { to } => match &settings.email {
+                Some(base) => {
+                    let mut cfg = base.clone();
+                    if let Some(to) = to {
+                        cfg.to = to.clone();
+                    }
+                    if cfg.to.is_empty() {
+                        tracing::warn!(rule = %rule_name, "action email sans destinataire — ignorée");
+                        return;
+                    }
+                    match EmailNotifier::new(&cfg) {
+                        Ok(n) => out.push(Arc::new(n)),
+                        Err(e) => {
+                            tracing::error!(rule = %rule_name, error = %e, "action email invalide — ignorée")
+                        }
+                    }
+                }
+                None => {
+                    tracing::warn!(rule = %rule_name, "action email mais SMTP non configuré — ignorée")
+                }
+            },
+            Action::Webhook { url, headers } => out.push(Arc::new(WebhookNotifier::new(
+                settings.http.clone(),
+                url.clone(),
+                headers.clone(),
+            ))),
+        }
+    }
+
+    /// Notifiers à déclencher pour une règle : ses actions résolues, sinon les notifiers globaux.
+    pub fn for_rule(&self, rule: &Rule) -> &[Arc<dyn Notifier>] {
+        self.per_rule
+            .get(&rule.name)
+            .map(|v| v.as_slice())
+            .unwrap_or(&self.default)
+    }
+}
+
 // ── Enregistreur (tests) ──────────────────────────────────────────────────────
 
 /// Notifier de test : accumule les alertes reçues dans un vecteur partagé.
@@ -210,6 +386,7 @@ mod tests {
             value: 742.0,
             threshold: 500.0,
             description: "avg(http.server.duration) > 500 over 300s".into(),
+            group_key: None,
         }
     }
 

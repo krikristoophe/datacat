@@ -18,8 +18,34 @@ use serde::Deserialize;
 pub enum RuleKind {
     /// Compte de logs sur la fenêtre (filtré par service / sévérité minimale).
     LogCount,
+    /// Compte de logs **groupés par signature** (`group_by`) : déclenche par groupe dont le
+    /// compte franchit le seuil. Ex. « 5 erreurs identiques » → un webhook par message distinct.
+    LogGroupCount,
     /// Agrégat d'une métrique sur la fenêtre.
     MetricThreshold,
+}
+
+/// Action déclenchée quand une règle passe en `firing`/`resolved`. Modulable et configurable
+/// par règle (`actions`). Si la liste est vide, les notifiers globaux par défaut sont utilisés.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Action {
+    /// Message Slack. `webhook_url` optionnel : sinon `SLACK_WEBHOOK_URL` global.
+    Slack {
+        #[serde(default)]
+        webhook_url: Option<String>,
+    },
+    /// E-mail. `to` optionnel : sinon `ALERT_EMAIL_TO` global.
+    Email {
+        #[serde(default)]
+        to: Option<Vec<String>>,
+    },
+    /// Webhook HTTP générique : POST JSON de l'alerte sur `url`, avec en-têtes optionnels.
+    Webhook {
+        url: String,
+        #[serde(default)]
+        headers: std::collections::HashMap<String, String>,
+    },
 }
 
 /// Fonction d'agrégation pour `metric_threshold`.
@@ -98,6 +124,24 @@ pub struct Rule {
     /// Sévérité de l'alerte émise (libre : info/warning/critical…).
     #[serde(default = "default_severity")]
     pub severity: String,
+
+    /// Pour `log_group_count` : clé de regroupement. Colonne (`body`, `service_name`,
+    /// `severity_text`, `trace_id`) ou `attr:<clé>` (attribut de log). Défaut `body`.
+    #[serde(default)]
+    pub group_by: Option<String>,
+
+    /// Actions déclenchées (slack/email/webhook). Vide ⇒ notifiers globaux par défaut.
+    #[serde(default)]
+    pub actions: Vec<Action>,
+}
+
+/// Expression de regroupement validée pour `log_group_count` (anti-injection).
+#[derive(Debug, Clone)]
+pub enum GroupExpr {
+    /// Colonne en liste blanche.
+    Column(&'static str),
+    /// Clé d'attribut JSON (bindée comme paramètre).
+    Attr(String),
 }
 
 impl Rule {
@@ -121,9 +165,37 @@ impl Rule {
                     );
                 }
             }
+            RuleKind::LogGroupCount => {
+                self.group_expr()?;
+            }
             RuleKind::LogCount => {}
         }
+        for action in &self.actions {
+            if let Action::Webhook { url, .. } = action {
+                if url.trim().is_empty() {
+                    anyhow::bail!("règle '{}': action webhook sans url", self.name);
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// Expression de regroupement validée (défaut `body`). Erreur si `group_by` non supporté.
+    pub fn group_expr(&self) -> Result<GroupExpr> {
+        match self.group_by.as_deref().unwrap_or("body") {
+            "body" => Ok(GroupExpr::Column("body")),
+            "service_name" => Ok(GroupExpr::Column("service_name")),
+            "severity_text" => Ok(GroupExpr::Column("severity_text")),
+            "trace_id" => Ok(GroupExpr::Column("trace_id")),
+            other => match other.strip_prefix("attr:") {
+                Some(key) if !key.is_empty() => Ok(GroupExpr::Attr(key.to_string())),
+                _ => anyhow::bail!(
+                    "règle '{}': group_by non supporté '{other}' \
+                     (body|service_name|severity_text|trace_id|attr:<clé>)",
+                    self.name
+                ),
+            },
+        }
     }
 }
 
@@ -191,5 +263,65 @@ mod tests {
         assert!(Comparator::Gte.compare(1.0, 1.0));
         assert!(Comparator::Lt.compare(0.0, 1.0));
         assert!(Comparator::Lte.compare(1.0, 1.0));
+    }
+
+    #[test]
+    fn parses_group_count_and_actions() {
+        let raw = r#"{ "rules": [
+            { "name":"5 erreurs identiques", "kind":"log_group_count", "severity_min":17,
+              "group_by":"body", "window_secs":300, "comparator":"gte", "threshold":5,
+              "actions":[
+                { "type":"webhook", "url":"https://h/x", "headers": { "x-a": "1" } },
+                { "type":"slack" },
+                { "type":"email", "to": ["a@b.c"] }
+              ] }
+        ] }"#;
+        let rules = parse_rules(raw).unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].kind, RuleKind::LogGroupCount);
+        assert_eq!(rules[0].actions.len(), 3);
+        assert!(matches!(
+            rules[0].group_expr().unwrap(),
+            GroupExpr::Column("body")
+        ));
+    }
+
+    #[test]
+    fn group_by_attr_and_rejects_unknown() {
+        let attr = r#"{ "rules": [
+            { "name":"par code", "kind":"log_group_count", "group_by":"attr:error.code",
+              "window_secs":60, "comparator":"gte", "threshold":3 }
+        ] }"#;
+        let rules = parse_rules(attr).unwrap();
+        assert!(matches!(&rules[0].group_expr().unwrap(), GroupExpr::Attr(k) if k == "error.code"));
+
+        let bad = r#"{ "rules": [
+            { "name":"x", "kind":"log_group_count", "group_by":"DROP TABLE",
+              "window_secs":60, "comparator":"gte", "threshold":3 }
+        ] }"#;
+        assert!(
+            parse_rules(bad).is_err(),
+            "group_by hors liste blanche rejeté"
+        );
+    }
+
+    #[test]
+    fn rejects_webhook_action_without_url() {
+        let raw = r#"{ "rules": [
+            { "name":"x", "kind":"log_count", "window_secs":60, "comparator":"gt", "threshold":1,
+              "actions":[ { "type":"webhook", "url":"" } ] }
+        ] }"#;
+        assert!(parse_rules(raw).is_err());
+    }
+
+    #[test]
+    fn example_rules_file_parses() {
+        // Garde l'exemple livré (`backend/alert_rules.example.json`) cohérent avec le schéma.
+        let rules = load_rules(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/alert_rules.example.json"
+        ))
+        .expect("alert_rules.example.json doit parser et valider");
+        assert!(rules.len() >= 4);
     }
 }

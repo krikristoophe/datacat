@@ -12,10 +12,14 @@ idempotente, scalable et auditable, avec PostgreSQL comme unique base.
 
 | Dossier | Description |
 |---|---|
-| [`backend/`](backend/) | API d'ingestion **Axum** (Rust) + migrations **sqlx** + tests |
-| [`sdks/typescript/`](sdks/typescript/) | SDK web (TypeScript) |
-| [`sdks/flutter/`](sdks/flutter/) | SDK mobile (Dart, compatible Flutter) |
-| [`docs/`](docs/) | Contrat, déploiement, intégration, contrat de token, sécurité, architecture |
+| [`backend/`](backend/) | API d'ingestion **Axum** (Rust) : events + télémétrie OTLP (logs/traces/métriques, HTTP+gRPC), lecture, alerting + migrations **sqlx** + tests |
+| [`sdks/typescript/`](sdks/typescript/) | SDK web analytics (TypeScript) |
+| [`sdks/flutter/`](sdks/flutter/) | SDK mobile analytics (Dart, compatible Flutter) |
+| [`exporter/`](exporter/) | Export froid PostgreSQL → **Parquet** sur S3 (crate Rust standalone) |
+| [`reader/`](reader/) | Lecture analytique froide **DataFusion** sur Parquet S3 (crate Rust standalone) |
+| [`mcp/`](mcp/) | Serveur **MCP** : accès lecture (logs/traces/events/métriques) pour un agent (Claude) |
+| [`examples/`](examples/) | Mini-projet d'intégration : backend Rust de démo + app React |
+| [`docs/`](docs/) | Contrat, architecture, déploiement, intégration, télémétrie OTLP, lecture, alerting, MCP, sécurité |
 
 ## Architecture (v1)
 

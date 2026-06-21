@@ -1,0 +1,31 @@
+{
+  "name": "@datacat/mcp-server",
+  "version": "0.1.0",
+  "description": "Serveur MCP donnant à Claude un accès lecture aux logs, traces, events et métriques de Datacat (debug, analyse de parcours, vérification).",
+  "type": "module",
+  "bin": {
+    "datacat-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.20.0",
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

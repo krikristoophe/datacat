@@ -22,43 +22,58 @@ Fichier JSON `{ "rules": [ … ] }`. Chaque règle :
 | Champ | Requis | Description |
 |---|---|---|
 | `name` | ✅ | nom lisible ; identifie l'état (machine ok↔firing) et apparaît dans l'alerte |
-| `kind` | ✅ | `log_count`, `log_group_count` ou `metric_threshold` |
-| `service` | — | filtre `service.name` (toutes sources si absent) |
+| `kind` | ✅ | type de condition (voir tableau ci-dessous) |
+| `source` | — | `logs` (défaut) \| `events` \| `spans` \| `metrics` — pour `telemetry_count` / `error_ratio` / `relative_change` |
+| `service` | — | filtre `service.name` (logs/spans/metrics) |
 | `window_secs` | ✅ | fenêtre glissante (secondes) sur laquelle la valeur est calculée |
 | `comparator` | ✅ | `gt` \| `gte` \| `lt` \| `lte` (compare la valeur au seuil) |
-| `threshold` | ✅ | seuil numérique |
-| `cooldown_secs` | — | durée minimale entre deux notifications de cette règle (défaut 0) |
+| `threshold` | ✅ | seuil numérique (compte, fraction 0..1 pour les ratios, ms pour `span_duration`, multiplicateur pour `relative_change`) |
+| `cooldown_secs` | — | durée minimale entre deux notifications (défaut 0) |
 | `severity` | — | sévérité de l'alerte émise (libre : `info`/`warning`/`critical`, défaut `warning`) |
-| `severity_min` | (log*) | sévérité OTLP minimale des logs comptés (ex. `17` = ERROR) |
+| `severity_min` | — | sévérité OTLP minimale des logs (ex. `17` = ERROR) |
 | `metric_name` | (metric_threshold) | nom de la métrique évaluée |
-| `agg` | (metric_threshold) | `avg` \| `max` \| `last` sur la fenêtre |
+| `agg` | (metric_threshold / span_duration) | `avg`\|`max`\|`min`\|`sum`\|`count`\|`last`\|`p50`\|`p90`\|`p95`\|`p99` |
+| `event_name` | — | filtre `event_name` (source `events`) |
+| `operation` | — | filtre le nom de l'opération du span (spans) |
+| `error_only` | — | restreint aux erreurs (spans : status=error ; logs : sévérité ≥ `severity_min`/17) |
+| `min_count` | — | échantillon minimal (`error_ratio` / `relative_change`) sous lequel on ne déclenche pas |
 | `group_by` | (log_group_count) | clé de regroupement (défaut `body`) — voir ci-dessous |
 | `actions` | — | actions à déclencher (slack/email/webhook). Vide ⇒ canaux globaux par défaut |
 
-### Kinds
+### Kinds (cas d'usage standard)
 
-- **`log_count`** : compte les logs sur la fenêtre, filtrés par `service` et `severity_min`, puis
-  compare ce compte au seuil. Ex. « plus de 10 logs ERROR du service billing en 5 min ».
-- **`log_group_count`** : comme `log_count`, mais **groupé par signature** (`group_by`). Chaque
-  groupe dont le compte franchit le seuil déclenche **indépendamment** (une alerte par signature,
-  portant sa `group_key`). C'est le « **5 erreurs identiques → webhook** » : on regroupe par
-  message d'erreur et on alerte sur chaque message distinct qui se répète. Les valeurs autorisées
-  de `group_by` sont en **liste blanche** (anti-injection) : `body`, `service_name`,
-  `severity_text`, `trace_id`, ou `attr:<clé>` (attribut de log, ex. `attr:error.code`).
-- **`metric_threshold`** : agrège (`avg` / `max` / `last`) les points d'un `metric_name` (valeur
-  `value_double`, à défaut `value_int`) sur la fenêtre, filtrés par `service`, puis compare au
-  seuil. Ex. « latence moyenne `http.server.duration` > 500 ms sur 5 min ».
+| `kind` | Calcule | Cas d'usage typique |
+|---|---|---|
+| `log_count` | compte de logs (service, `severity_min`) sur la fenêtre | « > 10 logs ERROR billing en 5 min » |
+| `log_group_count` | compte de logs **groupé par signature** (`group_by`) — un état par groupe | « 5 erreurs **identiques** → webhook » |
+| `metric_threshold` | agrégat d'une métrique (`avg`/`max`/`p95`/`p99`/…) | « **p95** `http.server.duration` > 800 ms » |
+| `telemetry_count` | compte de lignes sur une `source` | **heartbeat/no-data** (`lte` 0), chute de trafic (`lt`), pic de volume (`gt`) |
+| `error_ratio` | fraction d'erreurs sur `logs` ou `spans` (garde-fou `min_count`) | « **taux d'erreur** > 5 % sur ≥ 50 requêtes » |
+| `span_duration` | agrégat de la latence des spans (`duration_ms`, ms) | « **p99** de l'opération `checkout` > 2 s » |
+| `relative_change` | ratio volume(fenêtre courante)/volume(fenêtre précédente) | « erreurs **× 3** vs la période précédente » |
+
+Détails utiles :
+
+- **`log_group_count`** — `group_by` est en **liste blanche** (anti-injection) : `body`,
+  `service_name`, `severity_text`, `trace_id`, ou `attr:<clé>` (attribut de log, ex.
+  `attr:error.code`). Une alerte par signature, portant sa `group_key`.
+- **`telemetry_count`** — couvre trois besoins via le comparateur : `lte 0` = *dead man's switch*
+  (aucune donnée reçue = service muet/down), `lt N` = chute de trafic, `gt N` = pic. La `source`
+  choisit la table (logs/events/spans/metrics).
+- **`error_ratio`** — valeur ∈ [0, 1]. Numérateur = lignes en erreur (logs : sévérité ≥
+  `severity_min`/17 ; spans : status=error), dénominateur = total. Si le total < `max(min_count, 1)`,
+  la valeur est 0 (on n'alerte pas sur 1 erreur / 1 requête).
+- **`span_duration`** — `agg` par défaut `p95`. Filtrable par `service`, `operation`, `error_only`.
+- **`relative_change`** — la fenêtre précédente est `[now-2w, now-w]`. La base est plafonnée par
+  `max(min_count, 1)` pour éviter les faux pics quand il n'y a pas d'historique.
+- **percentiles** (`p50`/`p90`/`p95`/`p99`) — disponibles pour `metric_threshold` **et**
+  `span_duration` (via `percentile_cont`).
 
 ### Exemple
 
 ```json
 {
   "rules": [
-    {
-      "name": "erreurs billing", "kind": "log_count", "service": "billing",
-      "severity_min": 17, "window_secs": 300, "comparator": "gt", "threshold": 10,
-      "cooldown_secs": 600, "severity": "critical"
-    },
     {
       "name": "erreurs identiques répétées", "kind": "log_group_count",
       "severity_min": 17, "group_by": "body", "window_secs": 300,
@@ -70,9 +85,29 @@ Fichier JSON `{ "rules": [ … ] }`. Chaque règle :
       ]
     },
     {
-      "name": "latence api", "kind": "metric_threshold", "metric_name": "http.server.duration",
-      "service": "api", "agg": "avg", "window_secs": 300, "comparator": "gt",
-      "threshold": 500, "cooldown_secs": 600, "severity": "warning"
+      "name": "taux d'erreur api", "kind": "error_ratio", "source": "spans", "service": "api",
+      "min_count": 50, "window_secs": 300, "comparator": "gt", "threshold": 0.05,
+      "cooldown_secs": 300, "severity": "critical"
+    },
+    {
+      "name": "latence p95 checkout", "kind": "span_duration", "agg": "p95",
+      "service": "api", "operation": "checkout", "window_secs": 300,
+      "comparator": "gt", "threshold": 2000, "cooldown_secs": 600, "severity": "warning"
+    },
+    {
+      "name": "heartbeat ingestion", "kind": "telemetry_count", "source": "metrics",
+      "service": "api", "window_secs": 300, "comparator": "lte", "threshold": 0,
+      "cooldown_secs": 600, "severity": "critical"
+    },
+    {
+      "name": "pic d'erreurs", "kind": "relative_change", "source": "logs",
+      "severity_min": 17, "min_count": 20, "window_secs": 300,
+      "comparator": "gt", "threshold": 3, "cooldown_secs": 600, "severity": "warning"
+    },
+    {
+      "name": "latence p99 (métrique)", "kind": "metric_threshold",
+      "metric_name": "http.server.duration", "service": "api", "agg": "p99",
+      "window_secs": 300, "comparator": "gt", "threshold": 900, "cooldown_secs": 600
     }
   ]
 }

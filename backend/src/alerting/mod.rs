@@ -14,4 +14,6 @@ pub use notify::{
     Alert, AlertState, DispatchSettings, Dispatcher, EmailConfig, EmailNotifier, Notifier,
     RecordingNotifier, SlackNotifier, WebhookNotifier,
 };
-pub use rules::{load_rules, parse_rules, Action, Agg, Comparator, GroupExpr, Rule, RuleKind};
+pub use rules::{
+    load_rules, parse_rules, Action, Agg, Comparator, GroupExpr, Rule, RuleKind, Source,
+};

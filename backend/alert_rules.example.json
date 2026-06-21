@@ -42,19 +42,75 @@
       "severity": "warning"
     },
     {
-      "name": "latence api (p moyenne)",
+      "name": "taux d'erreur HTTP (traces)",
+      "kind": "error_ratio",
+      "source": "spans",
+      "service": "api",
+      "min_count": 50,
+      "window_secs": 300,
+      "comparator": "gt",
+      "threshold": 0.05,
+      "cooldown_secs": 300,
+      "severity": "critical"
+    },
+    {
+      "name": "latence p95 checkout",
+      "kind": "span_duration",
+      "agg": "p95",
+      "service": "api",
+      "operation": "checkout",
+      "window_secs": 300,
+      "comparator": "gt",
+      "threshold": 2000,
+      "cooldown_secs": 600,
+      "severity": "warning"
+    },
+    {
+      "name": "latence p99 (métrique http.server.duration)",
       "kind": "metric_threshold",
       "metric_name": "http.server.duration",
       "service": "api",
-      "agg": "avg",
+      "agg": "p99",
       "window_secs": 300,
       "comparator": "gt",
-      "threshold": 500,
+      "threshold": 900,
       "cooldown_secs": 600,
-      "severity": "warning",
-      "actions": [
-        { "type": "email", "to": ["oncall@example.com"] }
-      ]
+      "severity": "warning"
+    },
+    {
+      "name": "heartbeat ingestion (no-data)",
+      "kind": "telemetry_count",
+      "source": "metrics",
+      "service": "api",
+      "window_secs": 300,
+      "comparator": "lte",
+      "threshold": 0,
+      "cooldown_secs": 600,
+      "severity": "critical",
+      "actions": [{ "type": "email", "to": ["oncall@example.com"] }]
+    },
+    {
+      "name": "chute de trafic produit",
+      "kind": "telemetry_count",
+      "source": "events",
+      "event_name": "purchase_completed",
+      "window_secs": 3600,
+      "comparator": "lt",
+      "threshold": 5,
+      "cooldown_secs": 1800,
+      "severity": "warning"
+    },
+    {
+      "name": "pic d'erreurs vs période précédente",
+      "kind": "relative_change",
+      "source": "logs",
+      "severity_min": 17,
+      "min_count": 20,
+      "window_secs": 300,
+      "comparator": "gt",
+      "threshold": 3,
+      "cooldown_secs": 600,
+      "severity": "warning"
     }
   ]
 }

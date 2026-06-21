@@ -14,7 +14,7 @@ use sqlx::PgPool;
 use tokio::time::{interval, MissedTickBehavior};
 
 use crate::alerting::notify::{Alert, AlertState, Dispatcher, Notifier};
-use crate::alerting::rules::{Agg, GroupExpr, Rule, RuleKind};
+use crate::alerting::rules::{Agg, GroupExpr, Rule, RuleKind, Source};
 
 /// État runtime d'une règle (machine à états + horodatage de la dernière notification).
 #[derive(Debug, Default, Clone)]
@@ -230,89 +230,343 @@ fn describe(rule: &Rule) -> String {
             )
         }
         RuleKind::MetricThreshold => {
-            let agg = match rule.agg.unwrap_or(Agg::Avg) {
-                Agg::Avg => "avg",
-                Agg::Max => "max",
-                Agg::Last => "last",
-            };
             let metric = rule.metric_name.as_deref().unwrap_or("");
             format!(
-                "{agg}({metric}) {} {} over {}s",
+                "{}({metric}) {} {} over {}s",
+                rule.agg.unwrap_or(Agg::Avg).label(),
                 rule.comparator.symbol(),
                 rule.threshold,
                 rule.window_secs
             )
         }
+        RuleKind::TelemetryCount => format!(
+            "count({}) {} {} over {}s",
+            source_desc(rule),
+            rule.comparator.symbol(),
+            rule.threshold,
+            rule.window_secs
+        ),
+        RuleKind::ErrorRatio => format!(
+            "error_ratio({}) {} {} over {}s",
+            source_desc(rule),
+            rule.comparator.symbol(),
+            rule.threshold,
+            rule.window_secs
+        ),
+        RuleKind::SpanDuration => {
+            let op = rule
+                .operation
+                .as_deref()
+                .map(|o| format!(" op={o}"))
+                .unwrap_or_default();
+            let err = if rule.error_only { " errors" } else { "" };
+            format!(
+                "{}(span.duration_ms service={}{op}{err}) {} {}ms over {}s",
+                rule.agg.unwrap_or(Agg::P95).label(),
+                rule.service.as_deref().unwrap_or("*"),
+                rule.comparator.symbol(),
+                rule.threshold,
+                rule.window_secs
+            )
+        }
+        RuleKind::RelativeChange => format!(
+            "change({}) {} {}x vs previous {}s",
+            source_desc(rule),
+            rule.comparator.symbol(),
+            rule.threshold,
+            rule.window_secs
+        ),
     }
 }
 
-/// Calcule la valeur courante d'une règle sur sa fenêtre glissante `[now - window, now]`.
+/// Description compacte d'une source et de ses filtres (pour `describe`).
+fn source_desc(rule: &Rule) -> String {
+    let mut parts = vec![match rule.source {
+        Source::Logs => "logs",
+        Source::Events => "events",
+        Source::Spans => "spans",
+        Source::Metrics => "metrics",
+    }
+    .to_string()];
+    if let Some(s) = &rule.service {
+        parts.push(format!("service={s}"));
+    }
+    if let Some(sv) = rule.severity_min {
+        parts.push(format!("severity>={sv}"));
+    }
+    if let Some(e) = &rule.event_name {
+        parts.push(format!("event={e}"));
+    }
+    if let Some(o) = &rule.operation {
+        parts.push(format!("op={o}"));
+    }
+    if let Some(m) = &rule.metric_name {
+        parts.push(format!("metric={m}"));
+    }
+    if rule.error_only {
+        parts.push("errors".to_string());
+    }
+    parts.join(" ")
+}
+
+/// Calcule la valeur scalaire courante d'une règle sur sa fenêtre `[now - window, now]`.
 async fn compute_value(pool: &PgPool, rule: &Rule, now: DateTime<Utc>) -> anyhow::Result<f64> {
     let from = now - chrono::Duration::seconds(rule.window_secs as i64);
     match rule.kind {
         // Routé vers `compute_groups` ; jamais atteint ici.
         RuleKind::LogGroupCount => anyhow::bail!("log_group_count n'est pas une règle scalaire"),
-        RuleKind::LogCount => {
-            let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
-                "SELECT count(*) FROM logs WHERE log_time >= ",
-            );
-            qb.push_bind(from).push(" AND log_time <= ").push_bind(now);
+        RuleKind::LogCount | RuleKind::TelemetryCount => compute_count(pool, rule, from, now).await,
+        RuleKind::MetricThreshold => compute_metric(pool, rule, from, now).await,
+        RuleKind::ErrorRatio => compute_error_ratio(pool, rule, from, now).await,
+        RuleKind::SpanDuration => compute_span_duration(pool, rule, from, now).await,
+        RuleKind::RelativeChange => compute_relative_change(pool, rule, from, now).await,
+    }
+}
+
+// ── Helpers SQL partagés (source → table/colonne, fenêtre, filtres) ───────────
+
+/// Table SQL d'une source (identifiant en dur, jamais issu de l'entrée utilisateur).
+fn table_of(source: Source) -> &'static str {
+    match source {
+        Source::Logs => "logs",
+        Source::Events => "events",
+        Source::Spans => "spans",
+        Source::Metrics => "metric_points",
+    }
+}
+
+/// Colonne temporelle (= clé de partition) d'une source.
+fn time_col(source: Source) -> &'static str {
+    match source {
+        Source::Logs => "log_time",
+        Source::Events => "timestamp_client",
+        Source::Spans => "start_time",
+        Source::Metrics => "time",
+    }
+}
+
+/// `SELECT <select> FROM <table> WHERE <time_col> BETWEEN from AND to`. `select`, table et colonne
+/// proviennent d'énumérations/litéraux internes (jamais de l'entrée) — interpolation sûre ; les
+/// bornes temporelles sont bindées.
+fn windowed_query<'a>(
+    select: &str,
+    source: Source,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> sqlx::QueryBuilder<'a, sqlx::Postgres> {
+    let tc = time_col(source);
+    let mut qb = sqlx::QueryBuilder::new(format!(
+        "SELECT {select} FROM {} WHERE {tc} >= ",
+        table_of(source)
+    ));
+    qb.push_bind(from)
+        .push(format!(" AND {tc} <= "))
+        .push_bind(to);
+    qb
+}
+
+/// Filtres de base d'une source (hors sévérité/erreur), appliqués au numérateur **et** au
+/// dénominateur des ratios.
+fn push_base_filter(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule) {
+    match rule.source {
+        Source::Logs => {
             if let Some(s) = &rule.service {
                 qb.push(" AND service_name = ").push_bind(s.clone());
             }
-            if let Some(sv) = rule.severity_min {
-                qb.push(" AND severity_number >= ").push_bind(sv);
-            }
-            let count: i64 = qb.build_query_scalar().fetch_one(pool).await?;
-            Ok(count as f64)
         }
-        RuleKind::MetricThreshold => {
-            // Valeur scalaire d'un point : value_double sinon value_int.
-            let expr = match rule.agg.unwrap_or(Agg::Avg) {
-                Agg::Avg => "avg(coalesce(value_double, value_int::double precision))",
-                Agg::Max => "max(coalesce(value_double, value_int::double precision))",
-                // `last` : valeur du point le plus récent (ordre par time décroissant).
-                Agg::Last => {
-                    "(coalesce(value_double, value_int::double precision)) \
-                     FILTER (WHERE true) ORDER BY time DESC LIMIT 1"
-                }
-            };
-            let metric_name = rule.metric_name.clone().unwrap_or_default();
-
-            let value: Option<f64> = if rule.agg == Some(Agg::Last) {
-                // `last` se prête mal à un agrégat : requête dédiée (point le plus récent).
-                let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(
-                    "SELECT coalesce(value_double, value_int::double precision) \
-                     FROM metric_points WHERE metric_name = ",
-                );
-                qb.push_bind(metric_name)
-                    .push(" AND time >= ")
-                    .push_bind(from)
-                    .push(" AND time <= ")
-                    .push_bind(now);
-                if let Some(s) = &rule.service {
-                    qb.push(" AND service_name = ").push_bind(s.clone());
-                }
-                qb.push(" ORDER BY time DESC LIMIT 1");
-                qb.build_query_scalar().fetch_optional(pool).await?
-            } else {
-                let mut qb = sqlx::QueryBuilder::<sqlx::Postgres>::new(format!(
-                    "SELECT {expr} FROM metric_points WHERE metric_name = "
-                ));
-                qb.push_bind(metric_name)
-                    .push(" AND time >= ")
-                    .push_bind(from)
-                    .push(" AND time <= ")
-                    .push_bind(now);
-                if let Some(s) = &rule.service {
-                    qb.push(" AND service_name = ").push_bind(s.clone());
-                }
-                qb.build_query_scalar().fetch_one(pool).await?
-            };
-            // Aucune donnée sur la fenêtre → 0.0 (pas de déclenchement pour gt/gte usuels).
-            Ok(value.unwrap_or(0.0))
+        Source::Spans => {
+            if let Some(s) = &rule.service {
+                qb.push(" AND service_name = ").push_bind(s.clone());
+            }
+            if let Some(o) = &rule.operation {
+                qb.push(" AND name = ").push_bind(o.clone());
+            }
+        }
+        Source::Events => {
+            if let Some(e) = &rule.event_name {
+                qb.push(" AND event_name = ").push_bind(e.clone());
+            }
+        }
+        Source::Metrics => {
+            if let Some(s) = &rule.service {
+                qb.push(" AND service_name = ").push_bind(s.clone());
+            }
+            if let Some(m) = &rule.metric_name {
+                qb.push(" AND metric_name = ").push_bind(m.clone());
+            }
         }
     }
+}
+
+/// Filtres d'un *compte* : base + sévérité minimale (logs) + restriction aux erreurs (`error_only`).
+fn push_count_filter(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule) {
+    push_base_filter(qb, rule);
+    if rule.source == Source::Logs {
+        if let Some(sv) = rule.severity_min {
+            qb.push(" AND severity_number >= ").push_bind(sv);
+        }
+    }
+    if rule.error_only {
+        push_error_predicate(qb, rule);
+    }
+}
+
+/// Prédicat « ligne en erreur » (numérateur d'`error_ratio`) : sévérité (logs) ou status=error (spans).
+fn push_error_predicate(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule) {
+    match rule.source {
+        Source::Logs => {
+            qb.push(" AND severity_number >= ")
+                .push_bind(rule.severity_min.unwrap_or(17));
+        }
+        Source::Spans => {
+            qb.push(" AND status_code = 2");
+        }
+        Source::Events | Source::Metrics => {}
+    }
+}
+
+/// Expression SQL d'un agrégat sur `val` (colonne/expression numérique). `Last` est géré à part.
+fn agg_sql_expr(agg: Agg, val: &str) -> String {
+    match agg.percentile() {
+        Some(p) => format!("percentile_cont({p}) WITHIN GROUP (ORDER BY {val})"),
+        None => match agg {
+            Agg::Avg => format!("avg({val})"),
+            Agg::Max => format!("max({val})"),
+            Agg::Min => format!("min({val})"),
+            Agg::Sum => format!("sum({val})"),
+            Agg::Count => format!("count({val})"),
+            Agg::Last => unreachable!("last géré séparément"),
+            _ => unreachable!("percentiles gérés ci-dessus"),
+        },
+    }
+}
+
+// ── Calculs par kind ──────────────────────────────────────────────────────────
+
+/// `log_count` / `telemetry_count` : compte de lignes filtrées sur la source.
+async fn compute_count(
+    pool: &PgPool,
+    rule: &Rule,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> anyhow::Result<f64> {
+    let mut qb = windowed_query("count(*)", rule.source, from, to);
+    push_count_filter(&mut qb, rule);
+    let count: i64 = qb.build_query_scalar().fetch_one(pool).await?;
+    Ok(count as f64)
+}
+
+/// `metric_threshold` : agrégat (avg/max/min/sum/count/last/p50…p99) d'une métrique.
+async fn compute_metric(
+    pool: &PgPool,
+    rule: &Rule,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> anyhow::Result<f64> {
+    let agg = rule.agg.unwrap_or(Agg::Avg);
+    // Valeur scalaire d'un point : value_double sinon value_int.
+    let val = "coalesce(value_double, value_int::double precision)";
+    let metric = rule.metric_name.clone().unwrap_or_default();
+
+    let value: Option<f64> = if agg == Agg::Last {
+        // `last` : point le plus récent (requête dédiée).
+        let mut qb = windowed_query(val, Source::Metrics, from, to);
+        qb.push(" AND metric_name = ").push_bind(metric);
+        if let Some(s) = &rule.service {
+            qb.push(" AND service_name = ").push_bind(s.clone());
+        }
+        qb.push(" ORDER BY time DESC LIMIT 1");
+        qb.build_query_scalar().fetch_optional(pool).await?
+    } else {
+        let mut qb = windowed_query(&agg_sql_expr(agg, val), Source::Metrics, from, to);
+        qb.push(" AND metric_name = ").push_bind(metric);
+        if let Some(s) = &rule.service {
+            qb.push(" AND service_name = ").push_bind(s.clone());
+        }
+        qb.build_query_scalar().fetch_optional(pool).await?
+    };
+    // Aucune donnée sur la fenêtre → 0.0 (pas de déclenchement pour gt/gte usuels).
+    Ok(value.unwrap_or(0.0))
+}
+
+/// `error_ratio` : fraction de lignes en erreur (numérateur) sur le total (dénominateur), avec
+/// garde-fou `min_count` (sous l'échantillon minimal, 0.0 — pas de déclenchement).
+async fn compute_error_ratio(
+    pool: &PgPool,
+    rule: &Rule,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> anyhow::Result<f64> {
+    let mut q_total = windowed_query("count(*)", rule.source, from, to);
+    push_base_filter(&mut q_total, rule);
+    let total: i64 = q_total.build_query_scalar().fetch_one(pool).await?;
+    if (total as u64) < rule.min_count.max(1) {
+        return Ok(0.0);
+    }
+    let mut q_err = windowed_query("count(*)", rule.source, from, to);
+    push_base_filter(&mut q_err, rule);
+    push_error_predicate(&mut q_err, rule);
+    let errors: i64 = q_err.build_query_scalar().fetch_one(pool).await?;
+    Ok(errors as f64 / total as f64)
+}
+
+/// `span_duration` : agrégat de la latence des spans (`duration_ms`, en ms).
+async fn compute_span_duration(
+    pool: &PgPool,
+    rule: &Rule,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> anyhow::Result<f64> {
+    let agg = rule.agg.unwrap_or(Agg::P95);
+    let value: Option<f64> = if agg == Agg::Last {
+        let mut qb = windowed_query("duration_ms", Source::Spans, from, to);
+        qb.push(" AND duration_ms IS NOT NULL");
+        push_span_filter(&mut qb, rule);
+        qb.push(" ORDER BY start_time DESC LIMIT 1");
+        qb.build_query_scalar().fetch_optional(pool).await?
+    } else {
+        let mut qb = windowed_query(&agg_sql_expr(agg, "duration_ms"), Source::Spans, from, to);
+        qb.push(" AND duration_ms IS NOT NULL");
+        push_span_filter(&mut qb, rule);
+        qb.build_query_scalar().fetch_optional(pool).await?
+    };
+    Ok(value.unwrap_or(0.0))
+}
+
+/// Filtres propres aux spans (`span_duration`) : service / opération / erreurs.
+fn push_span_filter(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule) {
+    if let Some(s) = &rule.service {
+        qb.push(" AND service_name = ").push_bind(s.clone());
+    }
+    if let Some(o) = &rule.operation {
+        qb.push(" AND name = ").push_bind(o.clone());
+    }
+    if rule.error_only {
+        qb.push(" AND status_code = 2");
+    }
+}
+
+/// `relative_change` : ratio volume(fenêtre courante) / volume(fenêtre précédente, même durée).
+/// La base est plafonnée par `max(min_count, 1)` pour éviter les faux pics sans historique.
+async fn compute_relative_change(
+    pool: &PgPool,
+    rule: &Rule,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> anyhow::Result<f64> {
+    let window = to - from;
+    let prev_from = from - window;
+
+    let mut q_cur = windowed_query("count(*)", rule.source, from, to);
+    push_count_filter(&mut q_cur, rule);
+    let current: i64 = q_cur.build_query_scalar().fetch_one(pool).await?;
+
+    let mut q_prev = windowed_query("count(*)", rule.source, prev_from, from);
+    push_count_filter(&mut q_prev, rule);
+    let previous: i64 = q_prev.build_query_scalar().fetch_one(pool).await?;
+
+    let base = (previous as f64).max(rule.min_count.max(1) as f64);
+    Ok(current as f64 / base)
 }
 
 /// Calcule le compte de logs **par groupe** (`group_by`) sur la fenêtre `[now - window, now]`.
@@ -401,7 +655,6 @@ mod tests {
             name: "latence".into(),
             kind: RuleKind::MetricThreshold,
             service: Some("api".into()),
-            severity_min: None,
             metric_name: Some("http.server.duration".into()),
             agg: Some(Agg::Avg),
             window_secs: 300,
@@ -409,8 +662,7 @@ mod tests {
             threshold: 500.0,
             cooldown_secs: 600,
             severity: "critical".into(),
-            group_by: None,
-            actions: vec![],
+            ..Default::default()
         }
     }
 
@@ -427,15 +679,10 @@ mod tests {
             kind: RuleKind::LogCount,
             service: Some("billing".into()),
             severity_min: Some(17),
-            metric_name: None,
-            agg: None,
             window_secs: 60,
             comparator: Comparator::Gte,
             threshold: 5.0,
-            cooldown_secs: 0,
-            severity: "warning".into(),
-            group_by: None,
-            actions: vec![],
+            ..Default::default()
         };
         let d = describe(&log);
         assert!(
@@ -446,22 +693,97 @@ mod tests {
         let grp = Rule {
             name: "erreurs identiques".into(),
             kind: RuleKind::LogGroupCount,
-            service: None,
             severity_min: Some(17),
-            metric_name: None,
-            agg: None,
             window_secs: 300,
             comparator: Comparator::Gte,
             threshold: 5.0,
-            cooldown_secs: 0,
-            severity: "warning".into(),
             group_by: Some("body".into()),
-            actions: vec![],
+            ..Default::default()
         };
         let g = describe(&grp);
         assert!(
             g.contains("count(logs service=*, severity>=17) by body >= 5 over 300s"),
             "{g}"
+        );
+    }
+
+    #[test]
+    fn describe_standard_kinds() {
+        // metric percentile
+        let p95 = Rule {
+            name: "p95".into(),
+            kind: RuleKind::MetricThreshold,
+            metric_name: Some("http.server.duration".into()),
+            agg: Some(Agg::P95),
+            window_secs: 300,
+            comparator: Comparator::Gt,
+            threshold: 800.0,
+            ..Default::default()
+        };
+        assert!(describe(&p95).contains("p95(http.server.duration) > 800 over 300s"));
+
+        // heartbeat (telemetry_count, metrics, lte 0)
+        let hb = Rule {
+            name: "heartbeat".into(),
+            kind: RuleKind::TelemetryCount,
+            source: Source::Metrics,
+            service: Some("api".into()),
+            window_secs: 300,
+            comparator: Comparator::Lte,
+            threshold: 0.0,
+            ..Default::default()
+        };
+        assert!(describe(&hb).contains("count(metrics service=api) <= 0 over 300s"));
+
+        // error_ratio spans
+        let er = Rule {
+            name: "err".into(),
+            kind: RuleKind::ErrorRatio,
+            source: Source::Spans,
+            service: Some("api".into()),
+            window_secs: 300,
+            comparator: Comparator::Gt,
+            threshold: 0.05,
+            ..Default::default()
+        };
+        assert!(describe(&er).contains("error_ratio(spans service=api) > 0.05 over 300s"));
+
+        // span_duration p99 with operation
+        let sd = Rule {
+            name: "checkout".into(),
+            kind: RuleKind::SpanDuration,
+            agg: Some(Agg::P99),
+            service: Some("api".into()),
+            operation: Some("checkout".into()),
+            window_secs: 300,
+            comparator: Comparator::Gt,
+            threshold: 2000.0,
+            ..Default::default()
+        };
+        assert!(describe(&sd)
+            .contains("p99(span.duration_ms service=api op=checkout) > 2000ms over 300s"));
+
+        // relative_change
+        let rc = Rule {
+            name: "spike".into(),
+            kind: RuleKind::RelativeChange,
+            source: Source::Logs,
+            severity_min: Some(17),
+            window_secs: 300,
+            comparator: Comparator::Gt,
+            threshold: 3.0,
+            ..Default::default()
+        };
+        assert!(describe(&rc).contains("change(logs severity>=17) > 3x vs previous 300s"));
+    }
+
+    #[test]
+    fn agg_expr_shapes() {
+        assert_eq!(agg_sql_expr(Agg::Avg, "v"), "avg(v)");
+        assert_eq!(agg_sql_expr(Agg::Count, "v"), "count(v)");
+        assert_eq!(
+            agg_sql_expr(Agg::P95, "v"),
+            "percentile_cont(0.95) WITHIN GROUP (ORDER BY v)"
         );
     }
 }

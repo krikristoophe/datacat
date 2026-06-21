@@ -1,28 +1,63 @@
 //! Schéma des règles d'alerting et chargement depuis un fichier JSON (`ALERT_RULES_FILE`).
 //!
-//! Deux familles de règles :
-//! - `log_count` : compte de logs filtrés (service, sévérité minimale) sur une fenêtre glissante.
-//! - `metric_threshold` : agrégat (avg / max / last) d'une métrique sur une fenêtre glissante.
+//! Familles de règles (cas d'usage standard d'observabilité) :
+//! - `log_count` : compte de logs filtrés (service, sévérité minimale) sur une fenêtre.
+//! - `log_group_count` : compte de logs groupés par signature (`group_by`) — un seuil par groupe.
+//! - `metric_threshold` : agrégat (avg / max / min / sum / count / last / p50…p99) d'une métrique.
+//! - `telemetry_count` : compte de lignes sur une `source` (logs/events/spans/metrics) — couvre le
+//!   *heartbeat / no-data* (comparateur `lte` 0), la chute de trafic (`lt`) et le pic (`gt`).
+//! - `error_ratio` : taux d'erreur sur `logs` (sévérité) ou `spans` (status=error).
+//! - `span_duration` : agrégat de la latence des spans (`duration_ms`) — p95/p99 SLO.
+//! - `relative_change` : variation relative du volume vs la fenêtre précédente (détection de pic).
 //!
 //! Chaque règle compare la valeur calculée à un `threshold` via un `comparator` (gt/gte/lt/lte),
 //! avec un `cooldown_secs` qui borne la fréquence des notifications.
 
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::Deserialize;
 
 /// Type de règle (détermine la requête d'évaluation).
-#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RuleKind {
     /// Compte de logs sur la fenêtre (filtré par service / sévérité minimale).
+    #[default]
     LogCount,
     /// Compte de logs **groupés par signature** (`group_by`) : déclenche par groupe dont le
     /// compte franchit le seuil. Ex. « 5 erreurs identiques » → un webhook par message distinct.
     LogGroupCount,
-    /// Agrégat d'une métrique sur la fenêtre.
+    /// Agrégat d'une métrique sur la fenêtre (avg/max/min/sum/count/last/p50…p99).
     MetricThreshold,
+    /// Compte de lignes sur une `source` (logs/events/spans/metrics). Heartbeat/no-data via
+    /// `lte` 0, chute de trafic via `lt`, pic de volume via `gt`.
+    TelemetryCount,
+    /// Taux d'erreur (fraction 0..1) sur `logs` (sévérité ≥ `severity_min`) ou `spans`
+    /// (status=error). Garde-fou `min_count` pour ignorer les petits échantillons.
+    ErrorRatio,
+    /// Agrégat de la latence des spans (`duration_ms`, en ms) — `agg` avg/max/min/p50…p99
+    /// (défaut p95). Filtrable par `service` / `operation` (nom du span) / `error_only`.
+    SpanDuration,
+    /// Ratio volume(fenêtre courante) / volume(fenêtre précédente) sur une `source`. `gt 2` =
+    /// « doublé », `lt 0.5` = « divisé par deux ». Garde-fou `min_count` sur la base.
+    RelativeChange,
+}
+
+/// Source de données interrogée par les règles génériques (`telemetry_count`, `error_ratio`,
+/// `relative_change`). Chaque source a sa table, sa colonne temporelle et ses filtres.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Source {
+    /// Logs techniques (`logs`, `log_time`). Filtres : `service`, `severity_min`.
+    #[default]
+    Logs,
+    /// Events produit (`events`, `timestamp_client`). Filtre : `event_name`.
+    Events,
+    /// Spans/traces (`spans`, `start_time`). Filtres : `service`, `operation`, `error_only`.
+    Spans,
+    /// Points de métriques (`metric_points`, `time`). Filtres : `service`, `metric_name`.
+    Metrics,
 }
 
 /// Action déclenchée quand une règle passe en `firing`/`resolved`. Modulable et configurable
@@ -48,19 +83,56 @@ pub enum Action {
     },
 }
 
-/// Fonction d'agrégation pour `metric_threshold`.
+/// Fonction d'agrégation pour `metric_threshold` et `span_duration`.
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Agg {
     Avg,
     Max,
+    Min,
+    Sum,
+    Count,
+    /// Valeur du point/span le plus récent.
     Last,
+    P50,
+    P90,
+    P95,
+    P99,
+}
+
+impl Agg {
+    /// Quantile associé (pour `percentile_cont`), `None` pour les agrégats classiques.
+    pub fn percentile(&self) -> Option<f64> {
+        match self {
+            Agg::P50 => Some(0.5),
+            Agg::P90 => Some(0.9),
+            Agg::P95 => Some(0.95),
+            Agg::P99 => Some(0.99),
+            _ => None,
+        }
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Agg::Avg => "avg",
+            Agg::Max => "max",
+            Agg::Min => "min",
+            Agg::Sum => "sum",
+            Agg::Count => "count",
+            Agg::Last => "last",
+            Agg::P50 => "p50",
+            Agg::P90 => "p90",
+            Agg::P95 => "p95",
+            Agg::P99 => "p99",
+        }
+    }
 }
 
 /// Comparateur valeur ↔ seuil.
-#[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum Comparator {
+    #[default]
     Gt,
     Gte,
     Lt,
@@ -92,18 +164,22 @@ fn default_severity() -> String {
     "warning".to_string()
 }
 
-/// Une règle d'alerting. Les champs `metric_name` / `agg` ne sont requis que pour
-/// `metric_threshold` ; `severity_min` ne s'applique qu'à `log_count`.
-#[derive(Debug, Clone, Deserialize)]
+/// Une règle d'alerting. Beaucoup de champs sont conditionnels au `kind` (cf. `validate`).
+/// `Default` n'est fourni que pour la construction en test ; la désérialisation exige toujours
+/// `name`, `kind`, `window_secs`, `comparator`, `threshold`.
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct Rule {
     /// Nom lisible (apparaît dans la notification et identifie l'état de la règle).
     pub name: String,
     pub kind: RuleKind,
-    /// Filtre `service.name` (optionnel : toutes sources si absent).
+    /// Source interrogée par `telemetry_count` / `error_ratio` / `relative_change`. Défaut `logs`.
+    #[serde(default)]
+    pub source: Source,
+    /// Filtre `service.name` (optionnel : toutes sources si absent). S'applique à logs/spans/metrics.
     #[serde(default)]
     pub service: Option<String>,
 
-    // ── log_count ──
+    // ── logs ──
     /// Sévérité OTLP minimale prise en compte (ex. 17 = ERROR).
     #[serde(default)]
     pub severity_min: Option<i16>,
@@ -113,6 +189,24 @@ pub struct Rule {
     pub metric_name: Option<String>,
     #[serde(default)]
     pub agg: Option<Agg>,
+
+    // ── events ──
+    /// Filtre `event_name` (source `events`).
+    #[serde(default)]
+    pub event_name: Option<String>,
+
+    // ── spans ──
+    /// Filtre le nom d'opération du span (source `spans` / `span_duration`).
+    #[serde(default)]
+    pub operation: Option<String>,
+    /// Restreint aux erreurs (spans : status=error ; logs : sévérité ≥ `severity_min`/17).
+    #[serde(default)]
+    pub error_only: bool,
+
+    /// Échantillon minimal pour `error_ratio` / `relative_change` : sous ce total, pas de
+    /// déclenchement (évite le bruit sur de très petits volumes). Défaut 0.
+    #[serde(default)]
+    pub min_count: u64,
 
     /// Fenêtre glissante (secondes) sur laquelle la valeur est calculée.
     pub window_secs: u64,
@@ -156,11 +250,11 @@ impl Rule {
         match self.kind {
             RuleKind::MetricThreshold => {
                 if self.metric_name.as_deref().unwrap_or("").is_empty() {
-                    anyhow::bail!("règle '{}': metric_threshold exige metric_name", self.name);
+                    bail!("règle '{}': metric_threshold exige metric_name", self.name);
                 }
                 if self.agg.is_none() {
-                    anyhow::bail!(
-                        "règle '{}': metric_threshold exige agg (avg|max|last)",
+                    bail!(
+                        "règle '{}': metric_threshold exige agg (avg|max|min|sum|count|last|p50..p99)",
                         self.name
                     );
                 }
@@ -168,7 +262,18 @@ impl Rule {
             RuleKind::LogGroupCount => {
                 self.group_expr()?;
             }
-            RuleKind::LogCount => {}
+            RuleKind::ErrorRatio => {
+                if !matches!(self.source, Source::Logs | Source::Spans) {
+                    bail!(
+                        "règle '{}': error_ratio exige source=logs ou source=spans",
+                        self.name
+                    );
+                }
+            }
+            RuleKind::LogCount
+            | RuleKind::TelemetryCount
+            | RuleKind::SpanDuration
+            | RuleKind::RelativeChange => {}
         }
         for action in &self.actions {
             if let Action::Webhook { url, .. } = action {
@@ -312,6 +417,51 @@ mod tests {
               "actions":[ { "type":"webhook", "url":"" } ] }
         ] }"#;
         assert!(parse_rules(raw).is_err());
+    }
+
+    #[test]
+    fn parses_standard_kinds_and_sources() {
+        let raw = r#"{ "rules": [
+            { "name":"heartbeat", "kind":"telemetry_count", "source":"metrics", "service":"api",
+              "window_secs":300, "comparator":"lte", "threshold":0 },
+            { "name":"taux erreur", "kind":"error_ratio", "source":"spans", "service":"api",
+              "min_count":50, "window_secs":300, "comparator":"gt", "threshold":0.05 },
+            { "name":"p95 checkout", "kind":"span_duration", "agg":"p95", "operation":"checkout",
+              "window_secs":300, "comparator":"gt", "threshold":2000 },
+            { "name":"pic erreurs", "kind":"relative_change", "source":"logs", "severity_min":17,
+              "window_secs":300, "comparator":"gt", "threshold":3 },
+            { "name":"p99 latence", "kind":"metric_threshold", "metric_name":"http.server.duration",
+              "agg":"p99", "window_secs":300, "comparator":"gt", "threshold":900 }
+        ] }"#;
+        let rules = parse_rules(raw).unwrap();
+        assert_eq!(rules.len(), 5);
+        assert_eq!(rules[0].kind, RuleKind::TelemetryCount);
+        assert_eq!(rules[0].source, Source::Metrics);
+        assert_eq!(rules[1].kind, RuleKind::ErrorRatio);
+        assert_eq!(rules[1].min_count, 50);
+        assert_eq!(rules[2].agg, Some(Agg::P95));
+        assert_eq!(rules[3].kind, RuleKind::RelativeChange);
+        assert_eq!(rules[4].agg, Some(Agg::P99));
+        assert_eq!(rules[4].agg.unwrap().percentile(), Some(0.99));
+    }
+
+    #[test]
+    fn error_ratio_rejects_non_log_span_source() {
+        let raw = r#"{ "rules": [
+            { "name":"x", "kind":"error_ratio", "source":"metrics",
+              "window_secs":60, "comparator":"gt", "threshold":0.1 }
+        ] }"#;
+        assert!(parse_rules(raw).is_err());
+    }
+
+    #[test]
+    fn source_defaults_to_logs() {
+        let raw = r#"{ "rules": [
+            { "name":"x", "kind":"telemetry_count",
+              "window_secs":60, "comparator":"lte", "threshold":0 }
+        ] }"#;
+        let rules = parse_rules(raw).unwrap();
+        assert_eq!(rules[0].source, Source::Logs);
     }
 
     #[test]

@@ -1,0 +1,77 @@
+[workspace]
+
+[package]
+name = "datacat-exporter"
+version = "0.1.0"
+edition = "2021"
+license = "Proprietary"
+rust-version = "1.80"
+description = "Datacat — export périodique PostgreSQL → Parquet sur Object Storage S3-compatible"
+
+[[bin]]
+name = "datacat-export"
+path = "src/main.rs"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+
+# PostgreSQL
+sqlx = { version = "0.8", default-features = false, features = [
+    "runtime-tokio-rustls", "postgres", "uuid", "chrono", "json",
+] }
+
+# Arrow + Parquet
+arrow = { version = "54", default-features = false, features = ["csv"] }
+parquet = { version = "54", default-features = false, features = ["arrow", "async", "snap", "zstd"] }
+
+# S3 / Object Storage
+object_store = { version = "0.11", features = ["aws"] }
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Serde / JSON
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Dates
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# UUID
+uuid = { version = "1", features = ["v4"] }
+
+# Error handling
+anyhow = "1"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter", "ansi"] }
+
+# URL parsing (for object_store)
+url = "2"
+
+# Futures utilities
+futures = "0.3"
+
+# Byte buffers
+bytes = "1"
+
+[lib]
+name = "datacat_exporter"
+path = "src/lib.rs"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full", "test-util"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+hmac = "0.12"
+sha2 = "0.10"
+uuid = { version = "1", features = ["v4"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

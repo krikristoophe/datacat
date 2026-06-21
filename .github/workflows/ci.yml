@@ -71,6 +71,32 @@ jobs:
       - run: dart analyze
       - run: dart test
 
+  exporter:
+    name: Exporter (Rust — build + clippy + fmt)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: exporter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: exporter -> target
+      - name: Format
+        run: cargo fmt --check
+      - name: Clippy
+        run: cargo clippy -- -D warnings
+      - name: Build
+        run: cargo build --release
+      # Le test e2e (test_export_events_end_to_end) nécessite MinIO + PostgreSQL.
+      # Il est marqué #[tokio::test] (sans #[ignore]) et s'exécute en local via
+      # exporter/run-tests.sh qui orchestre les conteneurs Docker.
+      # En CI on ne le lance pas pour garder un job rapide et sans dépendances Docker.
+      # Pour exécuter le test e2e en local : cd exporter && ./run-tests.sh
+
   audit:
     name: Audit des dépendances (RustSec)
     runs-on: ubuntu-latest

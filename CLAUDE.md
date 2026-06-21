@@ -17,15 +17,27 @@ sur l'ingestion** : capturer des events de façon robuste, scalable et auditable
 ## Structure du dépôt
 
 ```
-backend/          API d'ingestion Axum (events + logs OTLP) + migrations sqlx + tests
-  src/            sous-modules : api/ db/ events/ logs/ ingest/ security/ config telemetry error
+backend/          API Axum (events + logs/traces/metrics OTLP) + alerting + MCP + migrations + tests
+  src/            api/ db/ events/ logs/ traces/ metrics/ otlp/ ingest/ query/ alerting/ security/
+                  config settings (config TOML multi-projet) telemetry error
 sdks/typescript/  SDK web (TypeScript)
 sdks/flutter/     SDK mobile (Dart, compatible Flutter)
-exporter/         export froid PostgreSQL → Parquet sur S3 (crate standalone)
+exporter/         export froid PostgreSQL → Parquet/S3 (crate ; aussi embarqué dans le backend via feature `export`)
+reader/           lecture froide DataFusion sur Parquet/S3 (crate standalone)
 examples/         mini-projet d'intégration : backend Rust de démo + app React (events + logs)
-docs/             CONTRACT.md (source de vérité), architecture, déploiement, intégration, token, otel-logs, sécurité
+docs/             docs Markdown (source de vérité technique) — voir docs/CONTRACT.md
+website/          site de doc Astro Starlight bilingue FR/EN (déployé sur GitHub Pages)
+datacat.example.toml + projects/example.toml   modèles de configuration unifiée
 docker-compose.yml  PostgreSQL pour dev/test
 ```
+
+## Configuration
+
+Toute la config passe par un **fichier TOML** (`datacat.toml`, modèle `datacat.example.toml`) :
+config globale du déploiement + **un fichier par projet** sous `projects/*.toml` (règles
+d'alerting + canaux de notification + filtre service/tenant). Les **secrets** ne sont jamais en
+clair : on référence l'environnement via `${VAR}` (ou `${VAR:-défaut}`). Sans `datacat.toml`, repli
+sur les variables d'environnement. Détails : `docs/configuration.md`.
 
 ## Source de vérité
 
@@ -44,7 +56,7 @@ export DATABASE_URL=postgres://datacat:datacat@localhost:55432/datacat
 cd backend
 cargo build
 cargo test                 # nécessite DATABASE_URL (tests d'intégration PG)
-cargo clippy --all-targets -- -D warnings
+cargo clippy --all-targets --all-features -- -D warnings
 cargo fmt --check
 
 # SDK TypeScript
@@ -52,6 +64,9 @@ cd sdks/typescript && npm install && npm test && npm run build
 
 # SDK Flutter/Dart
 cd sdks/flutter && dart pub get && dart test
+
+# Site de doc
+cd website && npm install && npm run build
 ```
 
 ## Conventions de code
@@ -63,8 +78,21 @@ cd sdks/flutter && dart pub get && dart test
 - Dépendances **maîtrisées** : surface d'attaque minimale, versions à jour, pas de superflu.
 - Tout code livré est **testé**.
 
-## Hors scope v1 (ne pas implémenter)
+## Processus — à la fin de CHAQUE feature (obligatoire)
 
-Lecture analytique (DataFusion/DuckDB), stockage froid (Parquet/Iceberg), UI/dashboard,
-funnels, registre d'events, intégration des logs techniques, émission du token (backend
-consommateur), RGPD applicatif. L'architecture **prépare** ces extensions sans les déployer.
+1. **Documentation à jour** : toute feature met à jour la doc concernée — `docs/*.md` (en
+   **anglais**), le site `website/` (EN + **FR**), `CLAUDE.md`, et les modèles
+   `datacat.example.toml` / `.env.example` si la config change. La doc ne doit jamais diverger
+   du code.
+2. **Revue de code** : lancer un **`/code-review`** (revue cloud multi-agents de la branche).
+   Pour l'instant on **pousse directement sur `master`** ; passage en **PR** prévu quand le
+   projet sera en production.
+3. **Vérifs vertes** avant de pousser : `cargo fmt --check`, `cargo clippy --all-targets
+   --all-features -- -D warnings`, `cargo test`, et les tests des SDKs si touchés.
+
+## Portée
+
+V1 = ingestion robuste + télémétrie OTLP (logs/traces/metrics) + couche de lecture (chaude PG /
+froide Parquet) + alerting + export froid + MCP. **Hors scope** pour l'instant : UI/dashboard,
+funnels, registre d'events, isolation complète des données entre projets (le multi-projet est
+au niveau config : alerting/notifs/filtre, ingestion partagée), RGPD applicatif.

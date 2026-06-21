@@ -445,7 +445,7 @@ fn windowed_query<'a>(
 }
 
 /// Filtres de base d'une source (hors sévérité/erreur), appliqués au numérateur **et** au
-/// dénominateur des ratios.
+/// dénominateur des ratios. Inclut le filtre `tenant_id` (sources qui le portent).
 fn push_base_filter(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule) {
     match rule.source {
         Source::Logs => {
@@ -473,6 +473,16 @@ fn push_base_filter(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule
             if let Some(m) = &rule.metric_name {
                 qb.push(" AND metric_name = ").push_bind(m.clone());
             }
+        }
+    }
+    push_tenant_filter(qb, rule);
+}
+
+/// Filtre `tenant_id` pour les sources qui portent un tenant (logs/spans/events ; metrics non).
+fn push_tenant_filter(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule) {
+    if let Some(t) = &rule.tenant {
+        if matches!(rule.source, Source::Logs | Source::Spans | Source::Events) {
+            qb.push(" AND tenant_id = ").push_bind(t.clone());
         }
     }
 }
@@ -612,13 +622,16 @@ async fn compute_span_duration(
     Ok(value.unwrap_or(0.0))
 }
 
-/// Filtres propres aux spans (`span_duration`) : service / opération / erreurs.
+/// Filtres propres aux spans (`span_duration`) : service / opération / tenant / erreurs.
 fn push_span_filter(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule) {
     if let Some(s) = &rule.service {
         qb.push(" AND service_name = ").push_bind(s.clone());
     }
     if let Some(o) = &rule.operation {
         qb.push(" AND name = ").push_bind(o.clone());
+    }
+    if let Some(t) = &rule.tenant {
+        qb.push(" AND tenant_id = ").push_bind(t.clone());
     }
     if rule.error_only {
         qb.push(" AND status_code = 2");
@@ -795,13 +808,16 @@ async fn compute_novel_groups(
         .collect())
 }
 
-/// Filtres `service` / `severity_min` communs aux requêtes groupées sur `logs`.
+/// Filtres `service` / `severity_min` / `tenant` communs aux requêtes groupées sur `logs`.
 fn push_log_group_filters(qb: &mut sqlx::QueryBuilder<'_, sqlx::Postgres>, rule: &Rule) {
     if let Some(s) = &rule.service {
         qb.push(" AND service_name = ").push_bind(s.clone());
     }
     if let Some(sv) = rule.severity_min {
         qb.push(" AND severity_number >= ").push_bind(sv);
+    }
+    if let Some(t) = &rule.tenant {
+        qb.push(" AND tenant_id = ").push_bind(t.clone());
     }
 }
 

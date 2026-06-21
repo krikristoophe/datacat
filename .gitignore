@@ -8,6 +8,17 @@
 .env.*
 !.env.example
 *.pem
+
+# Config réelle (peut contenir des chemins/valeurs locales ; secrets via ${ENV}). Les modèles
+# `*.example.toml` et les projets d'exemple sont versionnés.
+/datacat.toml
+/projects/*.toml
+!/projects/example.toml
+
+# Site de doc (Astro Starlight)
+website/node_modules/
+website/dist/
+website/.astro/
 # Clés de TEST jetables (paires générées, pas des secrets) — versionnées pour les tests.
 !backend/tests/fixtures/*.pem
 keys/

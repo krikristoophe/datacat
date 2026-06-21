@@ -203,11 +203,22 @@ impl LogsAuth {
     /// `auto` : statique si un token statique est fourni, sinon JWT si la vérif token est
     /// activée, sinon aucune.
     fn from_env_vars(auth_var: &str, token_var: &str, token_enabled: bool) -> Result<Self> {
-        let static_token = std::env::var(token_var).ok().filter(|s| !s.is_empty());
-        match env_str(auth_var, "auto").to_ascii_lowercase().as_str() {
+        Self::resolve(
+            &env_str(auth_var, "auto"),
+            std::env::var(token_var).ok(),
+            token_enabled,
+        )
+    }
+
+    /// Résout le mode d'auth (`auto`|`static`|`jwt`|`none`) avec un éventuel token statique.
+    /// `auto` : statique si un token est fourni, sinon JWT si la vérif token est activée, sinon
+    /// aucune. Partagé par la config par variables d'environnement et par fichier TOML.
+    pub fn resolve(mode: &str, static_token: Option<String>, token_enabled: bool) -> Result<Self> {
+        let static_token = static_token.filter(|s| !s.is_empty());
+        match mode.trim().to_ascii_lowercase().as_str() {
             "static" => static_token
                 .map(LogsAuth::Static)
-                .with_context(|| format!("{auth_var}=static exige {token_var}")),
+                .context("mode d'auth `static` mais aucun token statique fourni"),
             "jwt" => Ok(LogsAuth::Jwt),
             "none" => Ok(LogsAuth::None),
             "auto" => Ok(match static_token {
@@ -215,7 +226,7 @@ impl LogsAuth {
                 None if token_enabled => LogsAuth::Jwt,
                 None => LogsAuth::None,
             }),
-            other => bail!("{auth_var} invalide: {other} (auto|static|jwt|none)"),
+            other => bail!("mode d'auth invalide: {other} (auto|static|jwt|none)"),
         }
     }
 }
@@ -349,7 +360,9 @@ fn read_pem_from_env() -> Result<Option<String>> {
     Ok(None)
 }
 
-fn parse_alg(s: &str) -> Result<Algorithm> {
+/// Parse un nom d'algorithme de signature. Asymétrique uniquement (clé publique seule).
+/// Partagé par la config par environnement et par fichier TOML.
+pub(crate) fn parse_alg(s: &str) -> Result<Algorithm> {
     match s {
         "EdDSA" | "eddsa" | "Ed25519" => Ok(Algorithm::EdDSA),
         "RS256" | "rs256" => Ok(Algorithm::RS256),

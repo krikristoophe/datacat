@@ -203,6 +203,10 @@ pub struct Rule {
     /// Filtre `service.name` (optionnel : toutes sources si absent). S'applique à logs/spans/metrics.
     #[serde(default)]
     pub service: Option<String>,
+    /// Filtre `tenant_id` (optionnel). Renseigné par défaut par le projet propriétaire de la règle.
+    /// S'applique aux sources qui portent un tenant (logs/spans/events ; ignoré pour metrics).
+    #[serde(default)]
+    pub tenant: Option<String>,
 
     // ── logs ──
     /// Sévérité OTLP minimale prise en compte (ex. 17 = ERROR).

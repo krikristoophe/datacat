@@ -18,13 +18,20 @@ use datacat_ingest::metrics::StoredMetricPoint;
 use datacat_ingest::security::AnomalyGuard;
 use datacat_ingest::security::RateLimiter;
 use datacat_ingest::security::TokenVerifier;
+use datacat_ingest::settings::{Project, Settings};
 use datacat_ingest::traces::StoredSpan;
 use datacat_ingest::{build_router, db, telemetry, AppState};
 
 #[tokio::main]
 async fn main() -> Result<()> {
     telemetry::init();
-    let config = Arc::new(Config::from_env()?);
+    // Configuration unifiée : datacat.toml (multi-projet) ou variables d'environnement (repli).
+    let Settings {
+        config,
+        projects,
+        export,
+    } = Settings::load()?;
+    let config = Arc::new(config);
 
     // --- Base de données : connexion, migrations, partitions ---
     let pool = db::connect(&config.database_url, config.db_max_connections).await?;
@@ -136,8 +143,11 @@ async fn main() -> Result<()> {
         let _ = sd_tx.send(true);
     });
 
-    // --- Moteur d'alerting (optionnel) : actif si des règles ET au moins un notifier ---
-    spawn_alerting(pool.clone(), Arc::clone(&config), sd_rx.clone());
+    // --- Moteur d'alerting : un évaluateur par projet configuré ---
+    spawn_alerting(pool.clone(), projects, sd_rx.clone());
+
+    // --- Export froid planifié (optionnel, feature `export`) ---
+    spawn_export(pool.clone(), export, sd_rx.clone());
 
     // --- Serveur OTLP/gRPC (logs), optionnel ---
     let grpc_handle = if config.grpc_enabled {
@@ -253,67 +263,56 @@ fn spawn_maintenance(
     });
 }
 
-/// Démarre le moteur d'alerting si configuré (fichier de règles + ≥1 notifier). No-op sinon.
-fn spawn_alerting(pool: PgPool, config: Arc<Config>, shutdown: tokio::sync::watch::Receiver<bool>) {
-    use datacat_ingest::alerting::{
-        run_eval_loop, DispatchSettings, Dispatcher, EmailConfig, EmailNotifier, Notifier,
-        SlackNotifier,
-    };
-
-    let ac = &config.alerting;
-    let Some(rules_file) = ac.rules_file.clone() else {
-        tracing::info!("alerting désactivé (ALERT_RULES_FILE non défini)");
+/// Démarre un évaluateur d'alerting par projet configuré (chacun avec ses règles + ses canaux).
+fn spawn_alerting(
+    pool: PgPool,
+    projects: Vec<Project>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    if projects.is_empty() {
+        tracing::info!("alerting désactivé (aucun projet configuré)");
         return;
-    };
-    let rules = match datacat_ingest::alerting::load_rules(&rules_file) {
-        Ok(r) if !r.is_empty() => r,
-        Ok(_) => {
-            tracing::warn!(file = %rules_file, "fichier de règles vide — alerting désactivé");
-            return;
-        }
-        Err(e) => {
-            tracing::error!(file = %rules_file, error = %e, "chargement des règles échoué — alerting désactivé");
-            return;
-        }
+    }
+    for project in projects {
+        spawn_project_alerting(pool.clone(), project, shutdown.clone());
+    }
+}
+
+fn spawn_project_alerting(
+    pool: PgPool,
+    project: Project,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    use datacat_ingest::alerting::{
+        run_eval_loop, DispatchSettings, Dispatcher, EmailNotifier, Notifier, SlackNotifier,
     };
 
-    // Une règle peut porter ses propres `actions` (webhook/slack/email) : dans ce cas l'alerting
-    // est utile même sans notifier global configuré.
-    let has_actions = rules.iter().any(|r| !r.actions.is_empty());
-    if !ac.has_notifier() && !has_actions {
-        tracing::warn!(
-            "ALERT_RULES_FILE défini mais aucun notifier global ni action de règle — alerting désactivé"
-        );
+    if project.rules.is_empty() {
+        tracing::info!(project = %project.id, "projet sans règle — alerting ignoré");
+        return;
+    }
+    // Une règle peut porter ses propres `actions` : l'alerting reste utile sans canal global.
+    let has_actions = project.rules.iter().any(|r| !r.actions.is_empty());
+    let has_channel = project.slack_webhook_url.is_some()
+        || project.email.as_ref().is_some_and(|e| !e.to.is_empty());
+    if !has_channel && !has_actions {
+        tracing::warn!(project = %project.id, "règles présentes mais aucun canal ni action — alerting du projet désactivé");
         return;
     }
 
-    // Client HTTP partagé par tous les canaux (Slack + webhooks génériques).
+    // Client HTTP partagé par tous les canaux (Slack + webhooks génériques) du projet.
     let http = reqwest::Client::new();
 
-    // Configuration SMTP de base (repli des actions `email`, et notifier e-mail global).
-    let email_base = match (ac.smtp_host.clone(), ac.email_from.clone()) {
-        (Some(host), Some(from)) => Some(EmailConfig {
-            smtp_host: host,
-            smtp_port: ac.smtp_port,
-            username: ac.smtp_username.clone(),
-            password: ac.smtp_password.clone(),
-            from,
-            to: ac.email_to.clone(),
-        }),
-        _ => None,
-    };
-
-    // Notifiers globaux par défaut (règles sans `actions`).
     let mut default: Vec<Arc<dyn Notifier>> = Vec::new();
-    if let Some(url) = ac.slack_webhook_url.clone() {
+    if let Some(url) = project.slack_webhook_url.clone() {
         default.push(Arc::new(SlackNotifier::with_client(http.clone(), url)));
     }
-    if let Some(base) = &email_base {
-        if !base.to.is_empty() {
-            match EmailNotifier::new(base) {
+    if let Some(email) = &project.email {
+        if !email.to.is_empty() {
+            match EmailNotifier::new(email) {
                 Ok(n) => default.push(Arc::new(n)),
                 Err(e) => {
-                    tracing::error!(error = %e, "configuration e-mail invalide — canal ignoré")
+                    tracing::error!(project = %project.id, error = %e, "config e-mail invalide — canal ignoré")
                 }
             }
         }
@@ -321,14 +320,106 @@ fn spawn_alerting(pool: PgPool, config: Arc<Config>, shutdown: tokio::sync::watc
 
     let settings = DispatchSettings {
         http,
-        slack_webhook_url: ac.slack_webhook_url.clone(),
-        email: email_base,
+        slack_webhook_url: project.slack_webhook_url.clone(),
+        email: project.email.clone(),
     };
-    let dispatcher = Dispatcher::build(&rules, &settings, default);
+    let dispatcher = Dispatcher::build(&project.rules, &settings, default);
 
-    let interval = ac.eval_interval;
-    tracing::info!(rules = rules.len(), "alerting activé");
-    tokio::spawn(run_eval_loop(pool, rules, dispatcher, interval, shutdown));
+    tracing::info!(project = %project.id, rules = project.rules.len(), "alerting du projet activé");
+    tokio::spawn(run_eval_loop(
+        pool,
+        project.rules,
+        dispatcher,
+        project.eval_interval,
+        shutdown,
+    ));
+}
+
+/// Démarre l'export froid planifié si la feature `export` est compilée et l'export configuré.
+#[cfg(feature = "export")]
+fn spawn_export(
+    pool: PgPool,
+    export: Option<datacat_ingest::settings::ExportSettings>,
+    shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let Some(export) = export else {
+        return;
+    };
+    tracing::info!(
+        bucket = %export.bucket,
+        schedule = ?export.schedule,
+        "export froid planifié activé"
+    );
+    tokio::spawn(run_export_loop(pool, export, shutdown));
+}
+
+#[cfg(not(feature = "export"))]
+fn spawn_export(
+    _pool: PgPool,
+    export: Option<datacat_ingest::settings::ExportSettings>,
+    _shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    if export.is_some() {
+        tracing::warn!("[export] configuré mais binaire compilé sans la feature `export` — ignoré");
+    }
+}
+
+/// Boucle d'export : à chaque tick, exporte la veille (UTC) vers Parquet/S3 pour chaque table.
+#[cfg(feature = "export")]
+async fn run_export_loop(
+    pool: PgPool,
+    export: datacat_ingest::settings::ExportSettings,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    use datacat_ingest::settings::ExportTable;
+
+    let store = {
+        let cfg = datacat_exporter::config::Config {
+            database_url: String::new(), // inutilisé pour construire l'object store
+            s3_endpoint: export.endpoint.clone(),
+            s3_region: export.region.clone(),
+            aws_access_key_id: export.access_key_id.clone(),
+            aws_secret_access_key: export.secret_access_key.clone(),
+            s3_allow_http: export.allow_http,
+        };
+        match datacat_exporter::config::build_object_store(&cfg, &export.bucket) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "object store invalide — export désactivé");
+                return;
+            }
+        }
+    };
+
+    let mut ticker = interval(export.schedule);
+    ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    loop {
+        tokio::select! {
+            _ = shutdown.changed() => {
+                tracing::info!("export froid arrêté");
+                break;
+            }
+            _ = ticker.tick() => {
+                // Exporte la veille (dernier jour UTC complet).
+                let date = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
+                let prefix = export.prefix.as_deref();
+                for table in &export.tables {
+                    let result = match table {
+                        ExportTable::Events => {
+                            datacat_exporter::export::export_events(&pool, &store, date, &export.bucket, prefix).await
+                        }
+                        ExportTable::Logs => {
+                            datacat_exporter::export::export_logs(&pool, &store, date, &export.bucket, prefix).await
+                        }
+                    };
+                    match result {
+                        Ok(rows) => tracing::info!(?table, %date, rows, "export froid terminé"),
+                        Err(e) => tracing::error!(?table, %date, error = %e, "export froid échoué"),
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Attend Ctrl-C ou SIGTERM pour déclencher l'arrêt propre.

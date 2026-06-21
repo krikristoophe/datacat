@@ -1,0 +1,92 @@
+# Datacat — configuration unifiée du déploiement (copier en `datacat.toml`).
+#
+# Les secrets ne sont JAMAIS écrits en clair : on référence l'environnement via `${VAR}`
+# (ou `${VAR:-défaut}` pour une valeur de repli). Le service refuse de démarrer si une
+# variable requise (sans défaut) est absente — fail-closed.
+#
+# Résolution du fichier : $DATACAT_CONFIG, puis ./datacat.toml, puis /etc/datacat/datacat.toml.
+
+[server]
+bind_addr = "0.0.0.0:8080"
+request_timeout = "15s"
+trust_forwarded_for = false          # true seulement derrière un proxy de confiance
+
+[server.grpc]
+enabled = false
+bind_addr = "0.0.0.0:4317"
+
+[server.cors]
+# ["*"] = toute origine (dev uniquement) ; sinon liste blanche d'origines.
+allowed_origins = []
+
+[database]
+url = "${DATABASE_URL}"
+max_connections = 10
+
+[ingest]
+flush_interval = "200ms"
+flush_batch_size = 5000
+channel_capacity = 100000
+retention_days = 90
+partition_future_days = 2
+# Sous-sections optionnelles : [ingest.limits], [ingest.rate_limit], [ingest.anomaly]
+# (valeurs par défaut sûres si omises).
+
+[token]
+# Vérification du token d'ingestion par signature asymétrique (clé publique seule).
+enabled = true
+algorithms = ["EdDSA", "RS256"]
+# Une source de clé publique parmi : jwks_url | public_key_pem | public_key_file.
+# jwks_url = "https://issuer.example.com/.well-known/jwks.json"
+public_key_pem = "${TOKEN_PUBLIC_KEY_PEM}"
+alg = "EdDSA"
+# issuer = "https://issuer.example.com"
+# audience = "datacat"
+
+[auth.logs]
+# Auth service-à-service des flux télémétrie (logs/traces/metrics) : auto|static|jwt|none.
+mode = "auto"
+static_token = "${LOGS_STATIC_TOKEN:-}"
+
+[auth.query]
+# Auth des endpoints de lecture (/v1/query/*).
+mode = "auto"
+static_token = "${QUERY_TOKEN:-}"
+
+[query.sql]
+enabled = false                      # endpoint SQL lecture seule (/v1/query/sql)
+timeout = "10s"
+max_rows = 1000
+
+[mcp]
+enabled = true                       # serveur MCP HTTP (/mcp)
+
+# Export froid planifié (PostgreSQL → Parquet/S3). Désactivé par défaut.
+[export]
+enabled = false
+schedule = "24h"
+bucket = "datacat-cold"
+prefix = ""
+region = "eu-west-1"
+endpoint = "${S3_ENDPOINT:-}"        # vide = AWS S3 ; renseigner pour MinIO/compatible
+access_key_id = "${AWS_ACCESS_KEY_ID:-}"
+secret_access_key = "${AWS_SECRET_ACCESS_KEY:-}"
+allow_http = false
+tables = ["events", "logs"]
+
+# Canaux de notification GLOBAUX (repli pour les projets sans canaux propres).
+[notifications.slack]
+webhook_url = "${SLACK_WEBHOOK_URL:-}"
+
+# [notifications.email]
+# smtp_host = "smtp.example.com"
+# smtp_port = 587
+# username = "${SMTP_USERNAME:-}"
+# password = "${SMTP_PASSWORD:-}"
+# from = "Datacat <alerts@example.com>"
+# to = ["ops@example.com"]
+
+# Projets supervisés : un fichier TOML par projet (alerting + canaux + filtre service/tenant).
+[projects]
+dir = "projects"
+# files = ["projects/billing.toml", "projects/web.toml"]

@@ -1,0 +1,59 @@
+# Exemple de projet supervisé. Chaque projet a ses propres règles d'alerting, ses canaux de
+# notification (sinon repli sur [notifications] global), et un filtre par défaut service/tenant
+# appliqué aux règles qui n'en précisent pas.
+
+[project]
+id = "example"
+name = "Example Project"
+service = "api"          # filtre `service` par défaut des règles
+# tenant = "acme"        # filtre `tenant` par défaut (logs/spans/events)
+
+[alerting]
+eval_interval = "60s"
+
+# Canaux du projet (sinon repli sur [notifications] global de datacat.toml).
+[notifications.slack]
+webhook_url = "${EXAMPLE_SLACK_WEBHOOK_URL:-}"
+
+# Taux d'erreur > 5 % sur ≥ 50 logs.
+[[alerting.rules]]
+name = "Taux d'erreur élevé"
+kind = "error_ratio"
+source = "logs"
+severity_min = 17
+min_count = 50
+window_secs = 300
+comparator = "gt"
+threshold = 0.05
+cooldown_secs = 300
+severity = "critical"
+
+# Latence p95 de la métrique http.server.duration.
+[[alerting.rules]]
+name = "Latence p95"
+kind = "metric_threshold"
+metric_name = "http.server.duration"
+agg = "p95"
+window_secs = 300
+comparator = "gt"
+threshold = 800
+cooldown_secs = 600
+
+# 5 erreurs identiques (groupées par message) -> Slack + webhook.
+[[alerting.rules]]
+name = "5 erreurs identiques"
+kind = "log_group_count"
+group_by = "body"
+severity_min = 17
+window_secs = 300
+comparator = "gte"
+threshold = 5
+cooldown_secs = 300
+
+[[alerting.rules.actions]]
+type = "slack"
+
+[[alerting.rules.actions]]
+type = "webhook"
+url = "${EXAMPLE_WEBHOOK_URL:-https://example.test/hook}"
+headers = { Authorization = "Bearer ${EXAMPLE_WEBHOOK_TOKEN:-changeme}" }

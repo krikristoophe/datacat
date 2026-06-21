@@ -20,6 +20,7 @@ pub mod metrics;
 pub mod otlp;
 pub mod query;
 pub mod security;
+pub mod settings;
 pub mod telemetry;
 pub mod traces;
 

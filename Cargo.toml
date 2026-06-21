@@ -1,6 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["backend"]
+# `exporter` est une dépendance (path) du backend pour l'export froid embarqué, mais conserve son
+# propre `[workspace]` (crate autonome) : on l'exclut donc du workspace racine pour éviter le
+# conflit « multiple workspace roots ».
+exclude = ["exporter", "reader"]
 
 [workspace.package]
 edition = "2021"

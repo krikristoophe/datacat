@@ -5,24 +5,38 @@ même socle que les events produit : table partitionnée par jour, idempotente, 
 `COPY`. Objectif (cahier §4.2, §9) : **relier** events produit et logs techniques via
 `tenant_id` / `actor_id` / `session_id`, et aux traces via `trace_id` / `span_id`.
 
-## 1. Endpoint
+## 1. Transports
 
-```
-POST /v1/logs
-Content-Type: application/json
-Authorization: Bearer <jwt-d-ingestion>     # même token que /v1/events
-```
+Datacat accepte les logs OTLP sur **deux transports**, tous deux standards (drop-in pour un SDK
+OpenTelemetry ou un Collector) :
 
-Corps : un `ExportLogsServiceRequest` OTLP standard. Réponse : `200` + `ExportLogsServiceResponse`
-(`{}`, ou `{ "partialSuccess": { "rejectedLogRecords": N } }` si des enregistrements ont été
-écartés sous back-pressure).
+| Transport | Endpoint | Activation |
+|---|---|---|
+| **OTLP/HTTP (JSON)** | `POST /v1/logs` | toujours actif (`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`) |
+| **OTLP/gRPC** | service `LogsService/Export` sur `:4317` | `GRPC_ENABLED=true` (port `GRPC_BIND_ADDR`) |
 
-C'est le **même protocole** que celui d'un OpenTelemetry Collector : n'importe quel SDK OTel ou
-Collector peut exporter vers Datacat en pointant l'endpoint OTLP/HTTP sur `…/v1/logs` avec
-`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`.
+Corps : un `ExportLogsServiceRequest` OTLP. Réponse : `ExportLogsServiceResponse` (vide, ou
+`partialSuccess` si des enregistrements ont été écartés sous back-pressure). Les deux transports
+partagent **exactement** la même logique d'admission (auth, rate limit, corrélation, dédup) et
+produisent le même `log_id` pour un contenu identique.
 
-> Les logs proviennent de **backends de confiance** (côté serveur), qui présentent un token
-> d'ingestion signé au même titre que les SDKs. Le token sert aussi de clé de rate limiting.
+## 1.1 Authentification (token de service, fixe)
+
+Contrairement aux events (front web/mobile, token JWT court-vécu par session car un client ne
+peut pas détenir de secret), les logs sont émis **de service à service** : un backend de confiance
+**peut** détenir un secret. L'auth des logs est donc, par défaut, un **token de service fixe**.
+
+Modes (`LOGS_AUTH`) :
+
+| Mode | Comportement |
+|---|---|
+| `static` (**recommandé**) | en-tête/métadonnée `Authorization: Bearer <LOGS_STATIC_TOKEN>`, comparé à **temps constant**. Le token est fixe (config du service émetteur), rotation par changement de valeur. |
+| `jwt` | vérification JWT par clé publique (un token de service **long-vécu** signé asymétriquement) — utile pour partager l'infra de clés des events. |
+| `none` | aucune auth (endpoint sur réseau interne / mTLS terminé au proxy). |
+| `auto` (défaut) | `static` si `LOGS_STATIC_TOKEN` est défini, sinon `jwt` si la vérif token est activée, sinon `none`. |
+
+Le token (statique ou JWT) sert aussi indirectement de filtre ; le rate limiting des logs est en
+revanche clé sur le `service.name` (source de confiance pour des logs service-à-service).
 
 ## 2. Modèle de données
 
@@ -71,14 +85,22 @@ ORDER BY e.timestamp_client;
 
 ### Depuis un backend instrumenté OpenTelemetry
 
-Configurer l'exporter OTLP/HTTP JSON vers Datacat, et ajouter les attributs de corrélation
-(`session_id`, `actor_id`, `tenant_id`) sur les logs (ou la resource). Le token d'ingestion est
-joint via l'en-tête `Authorization` (par ex. `OTEL_EXPORTER_OTLP_HEADERS`).
+Configurer l'exporter OTLP vers Datacat, ajouter les attributs de corrélation (`session_id`,
+`actor_id`, `tenant_id`) sur les logs (ou la resource), et joindre le **token de service fixe**
+via l'en-tête/métadonnée `Authorization`.
 
+HTTP/JSON :
 ```
 OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://ingest.example.com/v1/logs
 OTEL_EXPORTER_OTLP_PROTOCOL=http/json
-OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<jwt>
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<LOGS_STATIC_TOKEN>
+```
+
+gRPC (port 4317, si `GRPC_ENABLED=true` côté Datacat) :
+```
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=https://ingest.example.com:4317
+OTEL_EXPORTER_OTLP_PROTOCOL=grpc
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20<LOGS_STATIC_TOKEN>
 ```
 
 Un exemple complet (backend Rust + app React) est fourni dans `examples/` (voir son README).

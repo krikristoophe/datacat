@@ -13,7 +13,7 @@ use serde_json::json;
 
 use crate::error::{AppError, AppResult};
 use crate::events::model::{check_event, EventCheck, IngestBody, StructuralError};
-use crate::logs::{otlp_to_logs, ExportLogsServiceRequest};
+use crate::logs::{accept_logs, authorize_logs, otlp_to_logs, ExportLogsServiceRequest};
 use crate::security::{self, Decision};
 use crate::AppState;
 
@@ -149,63 +149,17 @@ pub async fn ingest_logs(
         });
     }
 
-    // Token (clé publique). Les logs proviennent de backends de confiance, qui présentent un
-    // token signé au même titre que les SDKs. La session de confiance sert de clé de rate limit.
-    let rl_key = if state.verifier.enabled() {
-        let token = extract_token(&headers, None).ok_or_else(|| {
-            state.anomaly.record_bad(ip, now);
-            AppError::Unauthorized("token d'ingestion requis".into())
-        })?;
-        match state.verifier.verify(token) {
-            Ok(v) => v.session_id,
-            Err(msg) => {
-                state.anomaly.record_bad(ip, now);
-                return Err(AppError::Unauthorized(msg));
-            }
-        }
-    } else {
-        ip.to_string()
-    };
-
-    if let Decision::Deny {
-        scope,
-        retry_after_secs,
-    } = state.limiter.check(now, ip, &rl_key, 1)
-    {
-        state.anomaly.record_bad(ip, now);
-        return Err(AppError::RateLimited {
-            scope,
-            retry_after_secs,
-        });
-    }
+    // Authentification de service (token fixe par défaut ; cf. LogsAuth).
+    let token = extract_token(&headers, None);
+    authorize_logs(&state, ip, now, token)?;
 
     let req: ExportLogsServiceRequest = serde_json::from_slice(&body).map_err(|e| {
         state.anomaly.record_bad(ip, now);
         AppError::bad_request(format!("OTLP JSON invalide: {e}"))
     })?;
 
-    let received_at = Utc::now();
-    let mut parsed = otlp_to_logs(req, received_at, &state.limits);
-
-    if parsed.stored.len() > state.config.max_logs_records {
-        state.anomaly.record_bad(ip, now);
-        return Err(AppError::PayloadTooLarge(format!(
-            "{} LogRecords > maximum {}",
-            parsed.stored.len(),
-            state.config.max_logs_records
-        )));
-    }
-    if parsed.dropped_skew > 0 {
-        state
-            .logs
-            .metrics
-            .dropped_skew_total
-            .fetch_add(parsed.dropped_skew, Ordering::Relaxed);
-    }
-
-    let accepted = std::mem::take(&mut parsed.stored);
-    let total = accepted.len() as u64;
-    let enqueued = state.logs.try_enqueue(accepted) as u64;
+    let parsed = otlp_to_logs(req, Utc::now(), &state.limits);
+    let (total, enqueued) = accept_logs(&state, ip, now, parsed)?;
     let rejected = total - enqueued;
 
     // Réponse OTLP : partialSuccess si des enregistrements n'ont pas été retenus.

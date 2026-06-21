@@ -83,6 +83,9 @@ pub enum CorsOrigins {
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
+    /// Serveur OTLP/gRPC (logs) activé ?
+    pub grpc_enabled: bool,
+    pub grpc_bind_addr: SocketAddr,
     pub database_url: String,
     pub db_max_connections: u32,
 
@@ -105,7 +108,47 @@ pub struct Config {
     pub rate_limit: RateLimitConfig,
     pub anomaly: AnomalyConfig,
     pub token: TokenConfig,
+    pub logs_auth: LogsAuth,
     pub cors: CorsOrigins,
+}
+
+/// Authentification de l'endpoint de logs (`/v1/logs`).
+///
+/// Les logs sont émis **de service à service** : un backend de confiance peut détenir un
+/// secret (contrairement à un front web/mobile). On privilégie donc un **token fixe** plutôt
+/// que le JWT court-vécu par session des events.
+#[derive(Debug, Clone)]
+pub enum LogsAuth {
+    /// Token de service **statique** (secret partagé), comparé à temps constant. Recommandé.
+    Static(String),
+    /// Vérification JWT par clé publique (token de service long-vécu signé asymétriquement).
+    Jwt,
+    /// Aucune authentification (endpoint sur réseau interne / mTLS au proxy).
+    None,
+}
+
+impl LogsAuth {
+    /// `LOGS_AUTH` ∈ {auto, static, jwt, none} (défaut `auto`) + `LOGS_STATIC_TOKEN`.
+    /// `auto` : statique si un token statique est fourni, sinon JWT si la vérif token est
+    /// activée, sinon aucune.
+    fn from_env(token_enabled: bool) -> Result<Self> {
+        let static_token = std::env::var("LOGS_STATIC_TOKEN")
+            .ok()
+            .filter(|s| !s.is_empty());
+        match env_str("LOGS_AUTH", "auto").to_ascii_lowercase().as_str() {
+            "static" => static_token
+                .map(LogsAuth::Static)
+                .context("LOGS_AUTH=static exige LOGS_STATIC_TOKEN"),
+            "jwt" => Ok(LogsAuth::Jwt),
+            "none" => Ok(LogsAuth::None),
+            "auto" => Ok(match static_token {
+                Some(t) => LogsAuth::Static(t),
+                None if token_enabled => LogsAuth::Jwt,
+                None => LogsAuth::None,
+            }),
+            other => bail!("LOGS_AUTH invalide: {other} (auto|static|jwt|none)"),
+        }
+    }
 }
 
 impl Config {
@@ -140,6 +183,7 @@ impl Config {
         };
 
         let token = TokenConfig::from_env()?;
+        let logs_auth = LogsAuth::from_env(token.enabled)?;
         let cors = cors_from_env()?;
 
         let bind_addr = env_str("BIND_ADDR", "0.0.0.0:8080")
@@ -150,6 +194,10 @@ impl Config {
 
         Ok(Config {
             bind_addr,
+            grpc_enabled: env_bool("GRPC_ENABLED", false)?,
+            grpc_bind_addr: env_str("GRPC_BIND_ADDR", "0.0.0.0:4317")
+                .parse()
+                .context("GRPC_BIND_ADDR invalide")?,
             database_url,
             db_max_connections: env_parse("DB_MAX_CONNECTIONS", 10)?,
             flush_interval: env_duration("FLUSH_INTERVAL", Duration::from_millis(200))?,
@@ -165,6 +213,7 @@ impl Config {
             rate_limit,
             anomaly,
             token,
+            logs_auth,
             cors,
         })
     }

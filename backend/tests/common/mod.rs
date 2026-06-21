@@ -15,7 +15,8 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use datacat_ingest::config::{
-    AnomalyConfig, Config, CorsOrigins, KeySource, RateLimitConfig, TokenConfig, ValidationLimits,
+    AnomalyConfig, Config, CorsOrigins, KeySource, LogsAuth, RateLimitConfig, TokenConfig,
+    ValidationLimits,
 };
 use datacat_ingest::events::model::StoredEvent;
 use datacat_ingest::ingest::{self, BatcherHandle, IngestMetrics};
@@ -80,6 +81,8 @@ pub fn mint(
 pub fn test_config(token: TokenConfig, tweak: impl FnOnce(&mut Config)) -> Config {
     let mut cfg = Config {
         bind_addr: "127.0.0.1:0".parse().unwrap(),
+        grpc_enabled: false,
+        grpc_bind_addr: "127.0.0.1:0".parse().unwrap(),
         database_url: String::new(),
         db_max_connections: 5,
         flush_interval: Duration::from_millis(40),
@@ -117,6 +120,9 @@ pub fn test_config(token: TokenConfig, tweak: impl FnOnce(&mut Config)) -> Confi
             max_tracked_ips: 1_000_000,
         },
         token,
+        // Par défaut, les logs sont authentifiés par JWT (les tests logs envoient un JWT).
+        // Les tests du token statique surchargent via `tweak`.
+        logs_auth: LogsAuth::Jwt,
         cors: CorsOrigins::Any,
     };
     tweak(&mut cfg);
@@ -158,6 +164,8 @@ pub struct TestApp {
     pub metrics: Arc<IngestMetrics>,
     /// Métriques du domaine logs.
     pub logs_metrics: Arc<IngestMetrics>,
+    /// Adresse du serveur OTLP/gRPC de test (logs).
+    pub grpc_addr: SocketAddr,
     pub pool: PgPool,
     batchers: Vec<BatcherHandle>,
 }
@@ -254,6 +262,19 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
         ready: Arc::new(AtomicBool::new(true)),
     };
 
+    // Serveur OTLP/gRPC (logs) sur un port éphémère, partageant l'AppState.
+    let grpc_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let grpc_addr = grpc_listener.local_addr().unwrap();
+    let grpc_state = state.clone();
+    tokio::spawn(async move {
+        let _ = datacat_ingest::logs::grpc::serve(
+            grpc_state,
+            grpc_listener,
+            std::future::pending::<()>(),
+        )
+        .await;
+    });
+
     let app = build_router(state).into_make_service_with_connect_info::<SocketAddr>();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -265,6 +286,7 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
         base_url: format!("http://{addr}"),
         metrics,
         logs_metrics,
+        grpc_addr,
         pool,
         batchers: vec![events_batcher, logs_batcher],
     }

@@ -101,17 +101,48 @@ async fn main() -> Result<()> {
         ready: Arc::new(AtomicBool::new(true)),
     };
 
+    // --- Signal d'arrêt diffusé à tous les serveurs (HTTP + gRPC) ---
+    let (sd_tx, sd_rx) = tokio::sync::watch::channel(false);
+    tokio::spawn(async move {
+        shutdown_signal().await;
+        let _ = sd_tx.send(true);
+    });
+
+    // --- Serveur OTLP/gRPC (logs), optionnel ---
+    let grpc_handle = if config.grpc_enabled {
+        let listener = tokio::net::TcpListener::bind(config.grpc_bind_addr).await?;
+        tracing::info!(addr = %config.grpc_bind_addr, "OTLP/gRPC (logs) à l'écoute");
+        let st = state.clone();
+        let mut rx = sd_rx.clone();
+        Some(tokio::spawn(async move {
+            let shutdown = async move {
+                let _ = rx.changed().await;
+            };
+            if let Err(e) = datacat_ingest::logs::grpc::serve(st, listener, shutdown).await {
+                tracing::error!(error = %e, "serveur gRPC arrêté sur erreur");
+            }
+        }))
+    } else {
+        None
+    };
+
     // --- Serveur HTTP ---
     let app = build_router(state).into_make_service_with_connect_info::<std::net::SocketAddr>();
     let listener = tokio::net::TcpListener::bind(config.bind_addr).await?;
     tracing::info!(addr = %config.bind_addr, "datacat-ingest démarré");
 
+    let mut http_rx = sd_rx.clone();
     axum::serve(listener, app)
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            let _ = http_rx.changed().await;
+        })
         .await?;
 
-    // --- Arrêt propre : flush final des batchers, fermeture du pool ---
+    // --- Arrêt propre : gRPC, flush final des batchers, fermeture du pool ---
     tracing::info!("arrêt en cours — flush final des batchers");
+    if let Some(h) = grpc_handle {
+        let _ = h.await;
+    }
     events_batcher.shutdown().await;
     logs_batcher.shutdown().await;
     pool.close().await;

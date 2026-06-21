@@ -177,15 +177,10 @@ pub fn otlp_to_logs(
             .map(|r| attrs_to_map(&r.attributes))
             .unwrap_or_default();
         let service_name = lookup(&resource_attrs, &["service.name"]);
-        let res_tenant = lookup(&resource_attrs, TENANT_KEYS);
-        let res_actor = lookup(&resource_attrs, ACTOR_KEYS);
-        let res_session = lookup(&resource_attrs, SESSION_KEYS);
 
         for sl in rl.scope_logs {
             let scope_name = sl.scope.and_then(|s| s.name);
             for r in sl.log_records {
-                let log_attrs = attrs_to_map(&r.attributes);
-
                 let log_time = r
                     .time_unix_nano
                     .as_ref()
@@ -206,36 +201,25 @@ pub fn otlp_to_logs(
                     continue;
                 }
 
-                let observed_time = r
-                    .observed_time_unix_nano
-                    .as_ref()
-                    .and_then(|t| t.as_u64())
-                    .filter(|&n| n > 0)
-                    .and_then(nanos_to_dt);
-
-                let body = r.body.as_ref().map(anyvalue_to_string);
-                let resource_attributes = Value::Object(resource_attrs.clone());
-                let log_attributes = Value::Object(log_attrs.clone());
-
-                let log = StoredLog {
-                    log_id: dedup_id(&r, log_time, service_name.as_deref(), &log_attributes),
-                    log_time,
-                    observed_time,
+                out.stored.push(assemble_log(LogFields {
                     received_at,
+                    log_time,
+                    observed_time: r
+                        .observed_time_unix_nano
+                        .as_ref()
+                        .and_then(|t| t.as_u64())
+                        .filter(|&n| n > 0)
+                        .and_then(nanos_to_dt),
                     severity_number: r.severity_number.map(|n| n.clamp(0, 24) as i16),
                     severity_text: r.severity_text.clone(),
-                    body,
+                    body: r.body.as_ref().map(anyvalue_to_string),
                     service_name: service_name.clone(),
                     scope_name: scope_name.clone(),
                     trace_id: r.trace_id.clone().filter(|s| !s.is_empty()),
                     span_id: r.span_id.clone().filter(|s| !s.is_empty()),
-                    tenant_id: lookup(&log_attrs, TENANT_KEYS).or_else(|| res_tenant.clone()),
-                    actor_id: lookup(&log_attrs, ACTOR_KEYS).or_else(|| res_actor.clone()),
-                    session_id: lookup(&log_attrs, SESSION_KEYS).or_else(|| res_session.clone()),
-                    resource_attributes,
-                    log_attributes,
-                };
-                out.stored.push(log);
+                    log_attrs: attrs_to_map(&r.attributes),
+                    resource_attrs: &resource_attrs,
+                }));
             }
         }
     }
@@ -246,24 +230,84 @@ const TENANT_KEYS: &[&str] = &["tenant_id", "tenant.id", "tenant"];
 const ACTOR_KEYS: &[&str] = &["actor_id", "actor.id", "user.id", "enduser.id", "user_id"];
 const SESSION_KEYS: &[&str] = &["session_id", "session.id", "session"];
 
-/// `log_id` déterministe = hash du contenu (dédup des renvois OTLP identiques).
+/// Champs normalisés d'un log (indépendants du transport JSON/gRPC) prêts à être assemblés.
+pub(crate) struct LogFields<'a> {
+    pub received_at: DateTime<Utc>,
+    pub log_time: DateTime<Utc>,
+    pub observed_time: Option<DateTime<Utc>>,
+    pub severity_number: Option<i16>,
+    pub severity_text: Option<String>,
+    pub body: Option<String>,
+    pub service_name: Option<String>,
+    pub scope_name: Option<String>,
+    pub trace_id: Option<String>,
+    pub span_id: Option<String>,
+    pub log_attrs: Map<String, Value>,
+    pub resource_attrs: &'a Map<String, Value>,
+}
+
+/// Assemble un `StoredLog` à partir de champs normalisés : corrélation (log puis resource)
+/// et `log_id` déterministe. Utilisé par les deux transports → même dédup quel que soit OTLP/JSON
+/// ou OTLP/gRPC.
+pub(crate) fn assemble_log(f: LogFields<'_>) -> StoredLog {
+    let tenant_id =
+        lookup(&f.log_attrs, TENANT_KEYS).or_else(|| lookup(f.resource_attrs, TENANT_KEYS));
+    let actor_id =
+        lookup(&f.log_attrs, ACTOR_KEYS).or_else(|| lookup(f.resource_attrs, ACTOR_KEYS));
+    let session_id =
+        lookup(&f.log_attrs, SESSION_KEYS).or_else(|| lookup(f.resource_attrs, SESSION_KEYS));
+
+    let log_attributes = Value::Object(f.log_attrs);
+    let log_id = dedup_id(
+        f.log_time,
+        f.service_name.as_deref(),
+        f.body.as_deref(),
+        f.trace_id.as_deref(),
+        f.span_id.as_deref(),
+        f.severity_number,
+        &log_attributes,
+    );
+
+    StoredLog {
+        log_id,
+        log_time: f.log_time,
+        observed_time: f.observed_time,
+        received_at: f.received_at,
+        severity_number: f.severity_number,
+        severity_text: f.severity_text,
+        body: f.body,
+        service_name: f.service_name,
+        scope_name: f.scope_name,
+        trace_id: f.trace_id,
+        span_id: f.span_id,
+        tenant_id,
+        actor_id,
+        session_id,
+        resource_attributes: Value::Object(f.resource_attrs.clone()),
+        log_attributes,
+    }
+}
+
+/// `log_id` déterministe = hash du contenu normalisé (dédup des renvois OTLP identiques).
+#[allow(clippy::too_many_arguments)]
 fn dedup_id(
-    r: &LogRecord,
     log_time: DateTime<Utc>,
     service_name: Option<&str>,
+    body: Option<&str>,
+    trace_id: Option<&str>,
+    span_id: Option<&str>,
+    severity_number: Option<i16>,
     log_attributes: &Value,
 ) -> Uuid {
     let mut h = Sha256::new();
     h.update(log_time.timestamp_nanos_opt().unwrap_or(0).to_le_bytes());
     h.update(service_name.unwrap_or("").as_bytes());
     h.update([0]);
-    if let Some(b) = &r.body {
-        h.update(anyvalue_to_string(b).as_bytes());
-    }
+    h.update(body.unwrap_or("").as_bytes());
     h.update([0]);
-    h.update(r.trace_id.as_deref().unwrap_or("").as_bytes());
-    h.update(r.span_id.as_deref().unwrap_or("").as_bytes());
-    h.update(r.severity_number.unwrap_or(0).to_le_bytes());
+    h.update(trace_id.unwrap_or("").as_bytes());
+    h.update(span_id.unwrap_or("").as_bytes());
+    h.update(severity_number.unwrap_or(0).to_le_bytes());
     h.update(log_attributes.to_string().as_bytes());
     let digest = h.finalize();
     let mut bytes = [0u8; 16];
@@ -271,7 +315,7 @@ fn dedup_id(
     Uuid::from_bytes(bytes)
 }
 
-fn nanos_to_dt(nanos: u64) -> Option<DateTime<Utc>> {
+pub(crate) fn nanos_to_dt(nanos: u64) -> Option<DateTime<Utc>> {
     let secs = (nanos / 1_000_000_000) as i64;
     let nsub = (nanos % 1_000_000_000) as u32;
     DateTime::from_timestamp(secs, nsub)

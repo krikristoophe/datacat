@@ -163,3 +163,115 @@ async fn events_and_logs_correlate_by_session(pool: PgPool) {
     .unwrap();
     assert!(correlated >= 1, "event et log corrélés par session_id");
 }
+
+#[sqlx::test]
+async fn logs_static_service_token(pool: PgPool) {
+    // Token de service FIXE (service-à-service) plutôt que JWT par session.
+    let app = start_app(
+        pool,
+        test_config(token_enabled_ed(), |c| {
+            c.logs_auth = datacat_ingest::config::LogsAuth::Static("svc-secret".into());
+        }),
+    )
+    .await;
+    let client = reqwest::Client::new();
+
+    // Bon token statique → 200.
+    let r = client
+        .post(format!("{}/v1/logs", app.base_url))
+        .bearer_auth("svc-secret")
+        .json(&otlp_body(
+            "sess-static",
+            "log via static token",
+            Utc::now(),
+        ))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    // Mauvais token → 401.
+    let r = client
+        .post(format!("{}/v1/logs", app.base_url))
+        .bearer_auth("wrong-secret")
+        .json(&otlp_body("s", "x", Utc::now()))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 401);
+
+    app.wait_logs(1, Duration::from_secs(5)).await;
+    assert_eq!(app.count_logs().await, 1);
+}
+
+#[sqlx::test]
+async fn otlp_grpc_logs_ingested(pool: PgPool) {
+    use opentelemetry_proto::tonic::collector::logs::v1::logs_service_client::LogsServiceClient;
+    use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+    use opentelemetry_proto::tonic::common::v1::{any_value::Value as PV, AnyValue, KeyValue};
+    use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use opentelemetry_proto::tonic::resource::v1::Resource;
+
+    let app = start_app(
+        pool,
+        test_config(token_enabled_ed(), |c| {
+            c.logs_auth = datacat_ingest::config::LogsAuth::Static("svc-secret".into());
+        }),
+    )
+    .await;
+
+    fn kv(k: &str, v: &str) -> KeyValue {
+        KeyValue {
+            key: k.into(),
+            value: Some(AnyValue {
+                value: Some(PV::StringValue(v.into())),
+            }),
+            ..Default::default()
+        }
+    }
+
+    let nanos = Utc::now().timestamp_nanos_opt().unwrap() as u64;
+    let req = ExportLogsServiceRequest {
+        resource_logs: vec![ResourceLogs {
+            resource: Some(Resource {
+                attributes: vec![kv("service.name", "grpc-svc"), kv("tenant_id", "clinic-9")],
+                ..Default::default()
+            }),
+            scope_logs: vec![ScopeLogs {
+                log_records: vec![LogRecord {
+                    time_unix_nano: nanos,
+                    severity_number: 9,
+                    severity_text: "INFO".into(),
+                    body: Some(AnyValue {
+                        value: Some(PV::StringValue("log via grpc".into())),
+                    }),
+                    attributes: vec![kv("session_id", "sess-grpc"), kv("actor_id", "user-9")],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+
+    let mut grpc = LogsServiceClient::connect(format!("http://{}", app.grpc_addr))
+        .await
+        .unwrap();
+    let mut request = tonic::Request::new(req);
+    request
+        .metadata_mut()
+        .insert("authorization", "Bearer svc-secret".parse().unwrap());
+    grpc.export(request).await.unwrap();
+
+    assert_eq!(app.wait_logs(1, Duration::from_secs(5)).await, 1);
+    let row: LogRow = sqlx::query_as(
+        "SELECT service_name, session_id, trace_id, body, severity_number FROM logs LIMIT 1",
+    )
+    .fetch_one(&app.pool)
+    .await
+    .unwrap();
+    assert_eq!(row.service_name.as_deref(), Some("grpc-svc"));
+    assert_eq!(row.session_id.as_deref(), Some("sess-grpc"));
+    assert_eq!(row.body.as_deref(), Some("log via grpc"));
+    assert_eq!(row.severity_number, Some(9));
+}

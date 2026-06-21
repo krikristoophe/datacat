@@ -71,6 +71,10 @@ cd website && npm install && npm run build
 
 ## Conventions de code
 
+- **Langue : tout en ANGLAIS.** Code, commentaires, noms d'identifiants, messages de commit,
+  logs, et docs Markdown (`docs/*.md`) sont rédigés en anglais. Les pages **destinées aux
+  utilisateurs** (site `website/`) sont **en plus traduites en français** (Starlight bilingue
+  EN/FR). Seul ce `CLAUDE.md` reste en français.
 - **Navigation** : préférer les outils LSP (goToDefinition, findReferences, diagnostics)
   à grep pour tout ce qui touche au code.
 - Rust : pas de `unwrap()`/`expect()` dans les chemins de requête ; erreurs typées
@@ -80,14 +84,17 @@ cd website && npm install && npm run build
 
 ## Processus — à la fin de CHAQUE feature (obligatoire)
 
-1. **Documentation à jour** : toute feature met à jour la doc concernée — `docs/*.md` (en
-   **anglais**), le site `website/` (EN + **FR**), `CLAUDE.md`, et les modèles
-   `datacat.example.toml` / `.env.example` si la config change. La doc ne doit jamais diverger
-   du code.
+1. **Documentation à jour** : toute feature met à jour TOUTE la doc concernée — le **`README.md`**
+   racine, `docs/*.md` (en **anglais**), le site `website/` (EN + **FR**), `CLAUDE.md`, et les
+   modèles `datacat.example.toml` / `.env.example` si la config change. La doc ne doit jamais
+   diverger du code.
 2. **Revue de code** : lancer un **`/code-review`** (revue cloud multi-agents de la branche).
    Pour l'instant on **pousse directement sur `master`** ; passage en **PR** prévu quand le
    projet sera en production.
-3. **Vérifs vertes** avant de pousser : `cargo fmt --check`, `cargo clippy --all-targets
+3. **Revue de sécurité** : par défaut, la revue de sécurité porte sur **TOUT le code** (niveau
+   HDS), pas seulement le diff — sauf demande explicite de la limiter. Documenter dans
+   `docs/security-review.md` et corriger les findings.
+4. **Vérifs vertes** avant de pousser : `cargo fmt --check`, `cargo clippy --all-targets
    --all-features -- -D warnings`, `cargo test`, et les tests des SDKs si touchés.
 
 ## Portée

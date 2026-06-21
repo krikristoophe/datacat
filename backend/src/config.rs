@@ -304,6 +304,30 @@ impl Config {
             alerting: AlertingConfig::from_env()?,
         })
     }
+
+    /// Production guards. Unless built with `--features dev`, refuse dev-only relaxations that
+    /// would be dangerous in production: wildcard CORS and disabled token verification. This makes
+    /// those relaxations an explicit, compile-time opt-in.
+    pub fn enforce_runtime_guards(&self) -> Result<()> {
+        #[cfg(not(feature = "dev"))]
+        {
+            if matches!(self.cors, CorsOrigins::Any) {
+                bail!(
+                    "wildcard CORS (allowed_origins = [\"*\"]) is dev-only: build with \
+                     `--features dev`, or restrict the allowed origins"
+                );
+            }
+            if !self.token.enabled {
+                bail!(
+                    "token verification is disabled: dev-only — build with `--features dev` to \
+                     allow it (never in production)"
+                );
+            }
+        }
+        #[cfg(feature = "dev")]
+        let _ = self;
+        Ok(())
+    }
 }
 
 impl TokenConfig {

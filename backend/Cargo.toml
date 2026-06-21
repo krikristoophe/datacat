@@ -71,6 +71,9 @@ datacat-exporter = { path = "../exporter", optional = true }
 default = ["export"]
 # Embarque l'export froid (Arrow/Parquet/S3) dans le binaire et le planifie via [export] du TOML.
 export = ["dep:datacat-exporter"]
+# Dev-only relaxations (explicit opt-in): allows wildcard CORS and disabled token verification.
+# Never enable in production builds.
+dev = []
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full", "test-util"] }

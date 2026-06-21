@@ -31,6 +31,9 @@ async fn main() -> Result<()> {
         projects,
         export,
     } = Settings::load()?;
+    // Garde-fous production : refuse les relâchements dev-only (CORS `*`, token désactivé) sauf
+    // build `--features dev`.
+    config.enforce_runtime_guards()?;
     let config = Arc::new(config);
 
     // --- Base de données : connexion, migrations, partitions ---

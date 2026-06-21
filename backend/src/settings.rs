@@ -1047,6 +1047,23 @@ mod tests {
         assert_eq!(cfg.flush_batch_size, 5_000);
     }
 
+    #[cfg(not(feature = "dev"))]
+    #[test]
+    fn production_guards_reject_wildcard_cors() {
+        std::env::set_var("DC_GUARD_DBURL", "postgres://x");
+        let raw = r#"
+            [database]
+            url = "${DC_GUARD_DBURL}"
+            [token]
+            enabled = false
+            [server.cors]
+            allowed_origins = ["*"]
+        "#;
+        let cfg = build_config(&parse_file(raw).unwrap()).unwrap();
+        // Hors feature `dev` : CORS `*` (et token désactivé) sont refusés.
+        assert!(cfg.enforce_runtime_guards().is_err());
+    }
+
     #[test]
     fn token_enabled_without_key_fails() {
         let raw = r#"

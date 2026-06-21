@@ -1,83 +1,90 @@
 # Datacat
 
-Système d'analytics d'events **maison, léger et auto-hébergé** pour applications B2B.
-La **v1 se concentre exclusivement sur l'ingestion** : capturer des events de façon robuste,
-idempotente, scalable et auditable, avec PostgreSQL comme unique base.
+A **lightweight, self-hosted analytics & observability** platform built on **PostgreSQL alone**.
+Datacat ingests product **events** and OpenTelemetry **logs, traces and metrics**, stores them
+idempotently, and exposes them through a hot read layer, a cold Parquet export, a modular alerting
+engine and an embedded MCP server — with a strong, auditable (HDS-grade) security posture.
 
-> Deux usages cibles à terme : analyse des parcours réels et génération automatique de tests
-> E2E à partir de l'usage observé. La v1 construit le socle d'ingestion ; la lecture
-> analytique est *préparée par l'architecture* mais hors périmètre.
+📖 **Documentation: https://krikristoophe.github.io/datacat/** (bilingual EN/FR) — source in
+[`docs/`](docs/).
 
-## Composants
+## Principles
 
-| Dossier | Description |
+- **PostgreSQL only** as the central store — no Kafka, ClickHouse or Zookeeper.
+- **Strict idempotence** — a given `event_id` (or log/span/metric identity) counts exactly once,
+  even across retries (`ON CONFLICT DO NOTHING`).
+- **Write throughput first** — `COPY` into an `UNLOGGED` staging table, micro-batching,
+  time-partitioned tables, partition-drop purging.
+- **Light now, scalable later** — clean boundaries between ingestion, storage and reads.
+- **Auditable (HDS)** — strict input validation, a public endpoint defended server-side,
+  asymmetric token verification (public key only), TLS (rustls), secrets kept in the environment.
+- **Tolerant to losing a tiny fraction of events — never to duplicates.**
+
+## Components
+
+| Folder | Description |
 |---|---|
-| [`backend/`](backend/) | API d'ingestion **Axum** (Rust) : events + télémétrie OTLP (logs/traces/métriques, HTTP+gRPC), lecture, alerting, **serveur MCP HTTP** (`/mcp`) + migrations **sqlx** + tests |
-| [`sdks/typescript/`](sdks/typescript/) | SDK web analytics (TypeScript) |
-| [`sdks/flutter/`](sdks/flutter/) | SDK mobile analytics (Dart, compatible Flutter) |
-| [`exporter/`](exporter/) | Export froid PostgreSQL → **Parquet** sur S3 (crate Rust standalone) |
-| [`reader/`](reader/) | Lecture analytique froide **DataFusion** sur Parquet S3 (crate Rust standalone) |
-| [`examples/`](examples/) | Mini-projet d'intégration : backend Rust de démo + app React |
-| [`docs/`](docs/) | Contrat, architecture, déploiement, intégration, télémétrie OTLP, lecture, alerting, MCP, sécurité |
+| [`backend/`](backend/) | **Axum** (Rust) ingestion API: events + OTLP telemetry (logs/traces/metrics, HTTP + gRPC), hot read layer, alerting, embedded **MCP** server (`/mcp`), scheduled cold export, `sqlx` migrations + tests |
+| [`sdks/typescript/`](sdks/typescript/) | Web analytics SDK (TypeScript) |
+| [`sdks/flutter/`](sdks/flutter/) | Mobile analytics SDK (Dart / Flutter) |
+| [`exporter/`](exporter/) | Cold export PostgreSQL → **Parquet** on S3 (standalone crate; also embedded & scheduled in the backend) |
+| [`reader/`](reader/) | Cold analytical reads with **DataFusion** over Parquet on S3 (standalone crate) |
+| [`website/`](website/) | Bilingual documentation site (Astro Starlight) |
+| [`examples/`](examples/) | Integration mini-project: a demo Rust backend + a React app |
 
-## Architecture (v1)
+## Capabilities
 
-```
-Events (web / mobile / backend)
-        │  POST /v1/events  (batch, Bearer <jwt>)
-        ▼
-   API d'ingestion (Axum)
-        │  validation stricte · rate limiting 2 niveaux · vérif token (clé publique)
-        │  micro-batch en mémoire
-        ▼
-   PostgreSQL  ── COPY → staging UNLOGGED → MERGE idempotent → table partitionnée par temps
-        │
-        ▼  (hors v1) export froid Parquet/Iceberg · lecture DataFusion/DuckDB
-```
+- **Ingestion** — product events (`POST /v1/events`) and OTLP logs/traces/metrics over HTTP and
+  gRPC, all idempotent and time-partitioned, correlated by `session_id` / `actor_id` / `tenant_id`
+  / `trace_id`.
+- **Read layer** — hot queries over PostgreSQL (`/v1/query/*`: logs, events, traces, journeys,
+  metrics) and cold analytical queries over Parquet via the `reader` crate.
+- **Alerting** — declarative, **per-project** rules: log/error-rate thresholds, latency percentiles
+  (p95/p99), heartbeats, spikes, composite (AND/OR) conditions, new-error detection and statistical
+  anomalies — routed to Slack, e-mail or generic webhooks.
+- **Cold export** — scheduled PostgreSQL → Parquet/S3 export, idempotent per day.
+- **MCP** — an embedded HTTP MCP server exposing the read layer to an agent (e.g. Claude) for
+  debugging and test generation.
 
-Décisions clés :
+## Configuration
 
-- **Idempotence** : clé `(timestamp_client, event_id)`, `INSERT … ON CONFLICT DO NOTHING`.
-  Un même event reçu *N* fois n'est stocké qu'une fois. Voir [docs/architecture.md](docs/architecture.md).
-- **Débit d'écriture** : `COPY` depuis un micro-batch en mémoire vers une table de **staging
-  `UNLOGGED`**, puis merge idempotent vers la table partitionnée. Purge par `DROP PARTITION`.
-- **Sécurité** (endpoint public, non authentifié au sens fort) : validation stricte,
-  **rate limiting à deux niveaux** (par `session_id` + plafond de sessions par IP) + filet
-  global, **vérification du token** par signature asymétrique (clé publique seule), CORS,
-  détection d'anomalies, TLS. Conçu pour passer un **audit HDS**.
-- **Logs techniques OpenTelemetry** : ingestion **OTLP/HTTP** (`POST /v1/logs`) **et OTLP/gRPC**
-  (`:4317`), même socle partitionné/idempotent que les events, **token de service fixe**
-  (service-à-service), corrélés aux events via `session_id` / `actor_id` / `tenant_id` et aux
-  traces via `trace_id`. Voir [docs/otel-logs.md](docs/otel-logs.md).
-- **Mini-projet d'intégration** : `examples/` contient un backend Rust de démo (émet le token
-  d'ingestion + ses logs OTLP) et une app React (SDK analytics) pour valider l'intégration
-  complète events + logs de bout en bout.
+Everything is configured through a single **TOML file** (`datacat.toml`, template
+[`datacat.example.toml`](datacat.example.toml)) plus **one file per project** under
+[`projects/`](projects/) (alerting rules + notification channels + a default service/tenant filter).
+**Secrets are referenced from the environment** with `${VAR}` / `${VAR:-default}` and never written
+in clear text. See [docs/configuration.md](docs/configuration.md).
 
-## Démarrage rapide
+## Quick start
 
 ```bash
 # 1. PostgreSQL
 docker compose up -d postgres
 export DATABASE_URL=postgres://datacat:datacat@localhost:55432/datacat
 
-# 2. Backend (migrations appliquées au démarrage)
-cd backend
-cargo run            # écoute sur :8080 par défaut
+# 2. Configure
+cp datacat.example.toml datacat.toml   # then edit; secrets come from the environment
 
-# 3. Envoyer un batch d'events (token de dev généré par les outils de test)
-#    Voir docs/integration.md et docs/token-contract.md.
+# 3. Backend (migrations applied on startup)
+cd backend
+cargo run            # listens on :8080 by default
 ```
 
-Intégration côté application : [`docs/integration.md`](docs/integration.md).
-Déploiement de production : [`docs/deployment.md`](docs/deployment.md).
-Contrat de token (à implémenter par chaque backend consommateur) : [`docs/token-contract.md`](docs/token-contract.md).
+Application integration: [`docs/integration.md`](docs/integration.md) ·
+Deployment: [`docs/deployment.md`](docs/deployment.md) ·
+Token contract: [`docs/token-contract.md`](docs/token-contract.md) ·
+Security posture: [`docs/security.md`](docs/security.md).
 
-## Périmètre
+## Development
 
-v1 = **ingestion uniquement**. Hors v1 (préparé, non déployé) : lecture analytique, stockage
-froid, UI, funnels, logs techniques, scale-out (Citus/Redpanda). Détails dans le
-[cahier des charges](cahier_des_charges_analytics.md) §11.
+```bash
+cd backend && cargo test && cargo clippy --all-targets --all-features -- -D warnings && cargo fmt --check
+cd sdks/typescript && npm install && npm test && npm run build
+cd sdks/flutter && dart pub get && dart test
+cd website && npm install && npm run build
+```
 
-## Licence
+Contribution guide (for agents & humans): [`CLAUDE.md`](CLAUDE.md).
 
-Propriétaire — usage interne.
+## License
+
+Proprietary — internal use.

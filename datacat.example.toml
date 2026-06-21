@@ -16,7 +16,8 @@ enabled = false
 bind_addr = "0.0.0.0:4317"
 
 [server.cors]
-# ["*"] = toute origine (dev uniquement) ; sinon liste blanche d'origines.
+# Liste blanche d'origines. `["*"]` (toute origine) n'est accepté QUE si le binaire est compilé
+# avec `--features dev` ; sinon le démarrage échoue (garde-fou production).
 allowed_origins = []
 
 [database]
@@ -34,6 +35,7 @@ partition_future_days = 2
 
 [token]
 # Vérification du token d'ingestion par signature asymétrique (clé publique seule).
+# `enabled = false` n'est accepté qu'avec `--features dev` (garde-fou production).
 enabled = true
 algorithms = ["EdDSA", "RS256"]
 # Une source de clé publique parmi : jwks_url | public_key_pem | public_key_file.

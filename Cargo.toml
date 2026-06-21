@@ -14,4 +14,6 @@ rust-version = "1.80"
 [profile.release]
 lto = "thin"
 codegen-units = 1
-panic = "abort"
+# `unwind` (et non `abort`) : un panic dans un handler est rattrapé par CatchPanicLayer et
+# converti en 500, sans crasher le process (disponibilité — cf. revue de sécurité HDS).
+panic = "unwind"

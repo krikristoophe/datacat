@@ -10,6 +10,7 @@ use axum::response::Response;
 use axum::routing::{get, post};
 use axum::Router;
 use tower::ServiceBuilder;
+use tower_http::catch_panic::CatchPanicLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tower_http::request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer};
 use tower_http::timeout::TimeoutLayer;
@@ -58,6 +59,9 @@ pub fn build_router(state: AppState) -> Router {
         .merge(otlp_routes)
         .layer(
             ServiceBuilder::new()
+                // Outermost : convertit tout panic d'un handler en 500 au lieu de crasher le
+                // process (disponibilité HDS). Requiert l'unwind (profil release sans panic=abort).
+                .layer(CatchPanicLayer::new())
                 .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
                 .layer(PropagateRequestIdLayer::x_request_id())
                 .layer(TraceLayer::new_for_http())
@@ -77,6 +81,7 @@ pub fn build_router(state: AppState) -> Router {
             .layer(from_fn_with_state(state.clone(), mcp_auth))
             .layer(
                 ServiceBuilder::new()
+                    .layer(CatchPanicLayer::new())
                     .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
                     .layer(PropagateRequestIdLayer::x_request_id())
                     .layer(TraceLayer::new_for_http()),
@@ -112,5 +117,32 @@ fn build_cors(origins: &CorsOrigins) -> CorsLayer {
             let parsed: Vec<HeaderValue> = list.iter().filter_map(|o| o.parse().ok()).collect();
             base.allow_origin(parsed)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body::Body;
+    use axum::http::Request;
+    use tower::ServiceExt; // oneshot
+
+    async fn boom() -> StatusCode {
+        panic!("panic volontaire dans un handler de test")
+    }
+
+    /// Un panic dans un handler est rattrapé par CatchPanicLayer → 500 (le process ne crashe pas).
+    #[tokio::test]
+    async fn handler_panic_becomes_500() {
+        let app = Router::new()
+            .route("/boom", get(boom))
+            .layer(CatchPanicLayer::new());
+
+        let resp = app
+            .oneshot(Request::builder().uri("/boom").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

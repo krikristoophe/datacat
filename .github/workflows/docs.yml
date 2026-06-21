@@ -1,18 +1,13 @@
 name: Deploy docs to GitHub Pages
 
-# Déploiement MANUEL pour l'instant : GitHub Pages n'est pas disponible sur ce dépôt privé avec
-# le plan actuel ("current plan does not support GitHub Pages"). Pour activer le déploiement
-# automatique : rendre le dépôt public (ou passer à un plan compatible), puis dans
-# Settings → Pages choisir Source = "GitHub Actions", et enfin restaurer le déclencheur `push`
-# ci-dessous (commenté). Le build reste lançable à la main via "Run workflow".
 on:
+  push:
+    branches: [master]
+    paths:
+      - 'website/**'
+      - 'docs/**'
+      - '.github/workflows/docs.yml'
   workflow_dispatch:
-  # push:
-  #   branches: [master]
-  #   paths:
-  #     - 'website/**'
-  #     - 'docs/**'
-  #     - '.github/workflows/docs.yml'
 
 # Allow this workflow to deploy to GitHub Pages.
 permissions:

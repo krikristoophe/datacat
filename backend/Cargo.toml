@@ -76,6 +76,8 @@ export = ["dep:datacat-exporter"]
 tokio = { version = "1", features = ["full", "test-util"] }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 serde_json = "1"
+# `ServiceExt::oneshot` pour tester un routeur en mémoire (ex. CatchPanicLayer → 500).
+tower = { version = "0.5", features = ["util"] }
 
 [lints.rust]
 unsafe_code = "forbid"

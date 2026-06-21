@@ -104,7 +104,9 @@ impl TokenVerifier {
             return Err(format!("algorithme non autorisé: {:?}", header.alg));
         }
 
-        let keys = self.keys.read().expect("verrou clés empoisonné").clone();
+        // On récupère le guard même si le verrou est empoisonné : jamais de panic dans le
+        // chemin de requête (les données sous verrou restent cohérentes — simple remplacement).
+        let keys = self.keys.read().unwrap_or_else(|e| e.into_inner()).clone();
         let entry = select_key(&keys, header.kid.as_deref(), header.alg)
             .ok_or_else(|| "clé de signature inconnue".to_string())?;
 
@@ -149,7 +151,7 @@ impl TokenVerifier {
                 ticker.tick().await;
                 match fetch_jwks(&http, &url).await {
                     Ok(keys) => {
-                        *this.keys.write().expect("verrou clés empoisonné") = Arc::new(keys);
+                        *this.keys.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(keys);
                         tracing::info!("JWKS rafraîchi");
                     }
                     Err(e) => tracing::warn!(error = %e, "échec du rafraîchissement JWKS"),

@@ -15,12 +15,13 @@ use serde::Serialize;
 use sqlx::PgPool;
 
 use datacat_ingest::config::{
-    AnomalyConfig, Config, CorsOrigins, KeySource, LogsAuth, RateLimitConfig, TokenConfig,
-    ValidationLimits,
+    AlertingConfig, AnomalyConfig, Config, CorsOrigins, KeySource, LogsAuth, RateLimitConfig,
+    TokenConfig, ValidationLimits,
 };
 use datacat_ingest::events::model::StoredEvent;
 use datacat_ingest::ingest::{self, BatcherHandle, IngestMetrics};
 use datacat_ingest::logs::StoredLog;
+use datacat_ingest::metrics::StoredMetricPoint;
 use datacat_ingest::security::{AnomalyGuard, RateLimiter, TokenVerifier};
 use datacat_ingest::traces::StoredSpan;
 use datacat_ingest::{build_router, db, AppState};
@@ -127,6 +128,17 @@ pub fn test_config(token: TokenConfig, tweak: impl FnOnce(&mut Config)) -> Confi
         // Lecture ouverte par défaut en test ; un test dédié surcharge en Static.
         query_auth: LogsAuth::None,
         cors: CorsOrigins::Any,
+        alerting: AlertingConfig {
+            rules_file: None,
+            eval_interval: Duration::from_secs(60),
+            slack_webhook_url: None,
+            smtp_host: None,
+            smtp_port: 587,
+            smtp_username: None,
+            smtp_password: None,
+            email_from: None,
+            email_to: vec![],
+        },
     };
     tweak(&mut cfg);
     cfg
@@ -167,7 +179,9 @@ pub struct TestApp {
     pub metrics: Arc<IngestMetrics>,
     /// Métriques du domaine logs.
     pub logs_metrics: Arc<IngestMetrics>,
-    /// Adresse du serveur OTLP/gRPC de test (logs).
+    /// Métriques (compteurs d'ingestion) du domaine métriques.
+    pub metrics_metrics: Arc<IngestMetrics>,
+    /// Adresse du serveur OTLP/gRPC de test (logs + traces + métriques).
     pub grpc_addr: SocketAddr,
     pub pool: PgPool,
     batchers: Vec<BatcherHandle>,
@@ -201,6 +215,25 @@ impl TestApp {
             .fetch_one(&self.pool)
             .await
             .unwrap()
+    }
+
+    pub async fn count_metrics(&self) -> i64 {
+        sqlx::query_scalar::<_, i64>("SELECT count(*) FROM metric_points")
+            .fetch_one(&self.pool)
+            .await
+            .unwrap()
+    }
+
+    /// Attend que le nombre total de points de métriques atteigne `expected`.
+    pub async fn wait_metrics(&self, expected: i64, timeout: Duration) -> i64 {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let c = self.count_metrics().await;
+            if c >= expected || Instant::now() >= deadline {
+                return c;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
     }
 
     /// Attend que le nombre total de spans atteigne `expected`.
@@ -253,10 +286,14 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
     db::ensure_span_partition_window(&pool, 40, 3)
         .await
         .unwrap();
+    db::ensure_metric_partition_window(&pool, 40, 3)
+        .await
+        .unwrap();
 
     let metrics = Arc::new(IngestMetrics::default());
     let logs_metrics = Arc::new(IngestMetrics::default());
     let spans_metrics = Arc::new(IngestMetrics::default());
+    let metrics_metrics = Arc::new(IngestMetrics::default());
     let (events, events_batcher) = ingest::spawn::<StoredEvent>(
         pool.clone(),
         cfg.flush_interval,
@@ -278,6 +315,13 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
         cfg.channel_capacity,
         Arc::clone(&spans_metrics),
     );
+    let (metric_points, metrics_batcher) = ingest::spawn::<StoredMetricPoint>(
+        pool.clone(),
+        cfg.flush_interval,
+        cfg.flush_batch_size,
+        cfg.channel_capacity,
+        Arc::clone(&metrics_metrics),
+    );
     let verifier = TokenVerifier::new(&cfg.token).await.unwrap();
     let limiter = Arc::new(RateLimiter::new(cfg.rate_limit.clone(), Instant::now()));
     let anomaly = Arc::new(AnomalyGuard::new(cfg.anomaly.clone()));
@@ -287,6 +331,7 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
         events,
         logs,
         spans,
+        metric_points,
         limiter,
         verifier,
         anomaly,
@@ -317,9 +362,10 @@ pub async fn start_app(pool: PgPool, cfg: Config) -> TestApp {
         base_url: format!("http://{addr}"),
         metrics,
         logs_metrics,
+        metrics_metrics,
         grpc_addr,
         pool,
-        batchers: vec![events_batcher, logs_batcher, spans_batcher],
+        batchers: vec![events_batcher, logs_batcher, spans_batcher, metrics_batcher],
     }
 }
 

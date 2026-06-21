@@ -22,11 +22,12 @@ pub fn build_router(state: AppState) -> Router {
     let logs_body_limit = state.config.max_logs_payload_bytes;
     let timeout = state.config.request_timeout;
 
-    // Les flux OTLP (logs, traces) ont leur propre (plus grande) limite de corps : routes isolées
-    // puis fusionnées. La limite la plus interne l'emporte pour ces routes.
+    // Les flux OTLP (logs, traces, métriques) ont leur propre (plus grande) limite de corps :
+    // routes isolées puis fusionnées. La limite la plus interne l'emporte pour ces routes.
     let otlp_routes = Router::new()
         .route("/v1/logs", post(routes::ingest_logs))
         .route("/v1/traces", post(routes::ingest_traces))
+        .route("/v1/metrics", post(routes::ingest_metrics))
         .layer(axum::extract::DefaultBodyLimit::max(logs_body_limit));
 
     Router::new()
@@ -36,6 +37,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/stats", get(routes::stats))
         // Couche de lecture (lecture seule, authentifiée par query_auth).
         .route("/v1/query/logs", get(crate::query::routes::query_logs))
+        .route(
+            "/v1/query/metrics",
+            get(crate::query::routes::query_metrics),
+        )
         .route("/v1/query/events", get(crate::query::routes::query_events))
         .route(
             "/v1/query/traces/{trace_id}",

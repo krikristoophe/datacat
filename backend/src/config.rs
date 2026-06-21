@@ -80,6 +80,64 @@ pub enum CorsOrigins {
     Any,
 }
 
+/// Configuration du moteur d'alerting. Entièrement optionnelle : sans fichier de règles, ou
+/// sans aucun notifier (Slack/e-mail), le moteur est désactivé.
+#[derive(Debug, Clone)]
+pub struct AlertingConfig {
+    /// Chemin du fichier JSON des règles (`ALERT_RULES_FILE`).
+    pub rules_file: Option<String>,
+    /// Intervalle entre deux évaluations (`ALERT_EVAL_INTERVAL`, défaut 60s).
+    pub eval_interval: Duration,
+    /// Webhook Slack (`SLACK_WEBHOOK_URL`).
+    pub slack_webhook_url: Option<String>,
+    /// Hôte SMTP (`SMTP_HOST`).
+    pub smtp_host: Option<String>,
+    pub smtp_port: u16,
+    pub smtp_username: Option<String>,
+    pub smtp_password: Option<String>,
+    /// Expéditeur (`ALERT_EMAIL_FROM`).
+    pub email_from: Option<String>,
+    /// Destinataires (`ALERT_EMAIL_TO`, séparés par des virgules).
+    pub email_to: Vec<String>,
+}
+
+impl AlertingConfig {
+    fn from_env() -> Result<Self> {
+        let email_to: Vec<String> = env_str("ALERT_EMAIL_TO", "")
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        Ok(AlertingConfig {
+            rules_file: std::env::var("ALERT_RULES_FILE")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            eval_interval: env_duration("ALERT_EVAL_INTERVAL", Duration::from_secs(60))?,
+            slack_webhook_url: std::env::var("SLACK_WEBHOOK_URL")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            smtp_host: std::env::var("SMTP_HOST").ok().filter(|s| !s.is_empty()),
+            smtp_port: env_parse("SMTP_PORT", 587)?,
+            smtp_username: std::env::var("SMTP_USERNAME")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            smtp_password: std::env::var("SMTP_PASSWORD")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            email_from: std::env::var("ALERT_EMAIL_FROM")
+                .ok()
+                .filter(|s| !s.is_empty()),
+            email_to,
+        })
+    }
+
+    /// Au moins un canal de notification est-il configuré (Slack ou e-mail complet) ?
+    pub fn has_notifier(&self) -> bool {
+        self.slack_webhook_url.is_some()
+            || (self.smtp_host.is_some() && self.email_from.is_some() && !self.email_to.is_empty())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
@@ -113,6 +171,8 @@ pub struct Config {
     /// Auth des endpoints de lecture (`/v1/query/*`).
     pub query_auth: LogsAuth,
     pub cors: CorsOrigins,
+    /// Moteur d'alerting (règles + notifications). Désactivé si non configuré.
+    pub alerting: AlertingConfig,
 }
 
 /// Authentification de l'endpoint de logs (`/v1/logs`).
@@ -218,6 +278,7 @@ impl Config {
             logs_auth,
             query_auth,
             cors,
+            alerting: AlertingConfig::from_env()?,
         })
     }
 }

@@ -14,6 +14,9 @@ use serde_json::json;
 use crate::error::{AppError, AppResult};
 use crate::events::model::{check_event, EventCheck, IngestBody, StructuralError};
 use crate::logs::{accept_logs, authorize_logs, otlp_to_logs, ExportLogsServiceRequest};
+use crate::metrics::{
+    accept_metric_points, authorize_metrics, otlp_to_metrics, ExportMetricsServiceRequest,
+};
 use crate::security::{self, Decision};
 use crate::traces::{accept_spans, authorize_traces, otlp_to_spans, ExportTraceServiceRequest};
 use crate::AppState;
@@ -210,6 +213,44 @@ pub async fn ingest_traces(
     Ok((StatusCode::OK, Json(response)))
 }
 
+/// `POST /v1/metrics` — ingestion de métriques au format **OTLP/HTTP JSON**
+/// (`ExportMetricsServiceRequest`). Même auth de service que les logs/traces.
+pub async fn ingest_metrics(
+    State(state): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> AppResult<impl IntoResponse> {
+    let now = Instant::now();
+    let ip = security::client_ip(&headers, peer.ip(), state.config.trust_forwarded_for);
+
+    if state.anomaly.is_banned(ip, now) {
+        return Err(AppError::RateLimited {
+            scope: "anomaly_ban",
+            retry_after_secs: 60,
+        });
+    }
+
+    let token = extract_token(&headers, None);
+    authorize_metrics(&state, ip, now, token)?;
+
+    let req: ExportMetricsServiceRequest = serde_json::from_slice(&body).map_err(|e| {
+        state.anomaly.record_bad(ip, now);
+        AppError::bad_request(format!("OTLP JSON invalide: {e}"))
+    })?;
+
+    let parsed = otlp_to_metrics(req, Utc::now(), &state.limits);
+    let (total, enqueued) = accept_metric_points(&state, ip, now, parsed)?;
+    let rejected = total - enqueued;
+
+    let response = if rejected > 0 {
+        json!({ "partialSuccess": { "rejectedDataPoints": rejected, "errorMessage": "back-pressure" } })
+    } else {
+        json!({})
+    };
+    Ok((StatusCode::OK, Json(response)))
+}
+
 /// Extrait le token : en-tête `Authorization: Bearer` en priorité, sinon champ `token` du corps
 /// (repli `sendBeacon`, cf. CONTRACT §1.1). Jamais en query string.
 fn extract_token<'a>(headers: &'a HeaderMap, body_token: Option<&'a str>) -> Option<&'a str> {
@@ -258,6 +299,7 @@ pub async fn stats(State(state): State<AppState>) -> impl IntoResponse {
         "events": state.events.metrics.snapshot(),
         "logs": state.logs.metrics.snapshot(),
         "traces": state.spans.metrics.snapshot(),
+        "metrics": state.metric_points.metrics.snapshot(),
         "rate_limit": {
             "tracked_sessions": state.limiter.tracked_sessions(),
             "tracked_ips": state.limiter.tracked_ips(),

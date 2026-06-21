@@ -14,6 +14,7 @@ use datacat_ingest::config::Config;
 use datacat_ingest::events::model::StoredEvent;
 use datacat_ingest::ingest::{self, IngestMetrics};
 use datacat_ingest::logs::StoredLog;
+use datacat_ingest::metrics::StoredMetricPoint;
 use datacat_ingest::security::AnomalyGuard;
 use datacat_ingest::security::RateLimiter;
 use datacat_ingest::security::TokenVerifier;
@@ -37,11 +38,13 @@ async fn main() -> Result<()> {
     db::ensure_partition_window(&pool, past_days, future_days).await?;
     db::ensure_log_partition_window(&pool, past_days, future_days).await?;
     db::ensure_span_partition_window(&pool, past_days, future_days).await?;
+    db::ensure_metric_partition_window(&pool, past_days, future_days).await?;
 
     for (domain, drained) in [
         ("events", db::drain_staging(&pool).await),
         ("logs", db::drain_log_staging(&pool).await),
         ("traces", db::drain_span_staging(&pool).await),
+        ("metrics", db::drain_metric_staging(&pool).await),
     ] {
         match drained {
             Ok(n) if n > 0 => tracing::info!(domain, merged = n, "staging résiduel fusionné"),
@@ -57,6 +60,9 @@ async fn main() -> Result<()> {
     }
     if let Err(e) = db::purge_old_span_partitions(&pool, config.retention_days).await {
         tracing::warn!(error = %e, "purge initiale des partitions (traces) ignorée");
+    }
+    if let Err(e) = db::purge_old_metric_partitions(&pool, config.retention_days).await {
+        tracing::warn!(error = %e, "purge initiale des partitions (metrics) ignorée");
     }
 
     // --- Composants d'ingestion (un batcher par domaine) ---
@@ -75,6 +81,13 @@ async fn main() -> Result<()> {
         Arc::new(IngestMetrics::default()),
     );
     let (spans, spans_batcher) = ingest::spawn::<StoredSpan>(
+        pool.clone(),
+        config.flush_interval,
+        config.flush_batch_size,
+        config.channel_capacity,
+        Arc::new(IngestMetrics::default()),
+    );
+    let (metric_points, metrics_batcher) = ingest::spawn::<StoredMetricPoint>(
         pool.clone(),
         config.flush_interval,
         config.flush_batch_size,
@@ -106,6 +119,7 @@ async fn main() -> Result<()> {
         events,
         logs,
         spans,
+        metric_points,
         limiter,
         verifier,
         anomaly,
@@ -115,17 +129,20 @@ async fn main() -> Result<()> {
         ready: Arc::new(AtomicBool::new(true)),
     };
 
-    // --- Signal d'arrêt diffusé à tous les serveurs (HTTP + gRPC) ---
+    // --- Signal d'arrêt diffusé à tous les serveurs (HTTP + gRPC + alerting) ---
     let (sd_tx, sd_rx) = tokio::sync::watch::channel(false);
     tokio::spawn(async move {
         shutdown_signal().await;
         let _ = sd_tx.send(true);
     });
 
+    // --- Moteur d'alerting (optionnel) : actif si des règles ET au moins un notifier ---
+    spawn_alerting(pool.clone(), Arc::clone(&config), sd_rx.clone());
+
     // --- Serveur OTLP/gRPC (logs), optionnel ---
     let grpc_handle = if config.grpc_enabled {
         let listener = tokio::net::TcpListener::bind(config.grpc_bind_addr).await?;
-        tracing::info!(addr = %config.grpc_bind_addr, "OTLP/gRPC (logs + traces) à l'écoute");
+        tracing::info!(addr = %config.grpc_bind_addr, "OTLP/gRPC (logs + traces + metrics) à l'écoute");
         let st = state.clone();
         let mut rx = sd_rx.clone();
         Some(tokio::spawn(async move {
@@ -160,6 +177,7 @@ async fn main() -> Result<()> {
     events_batcher.shutdown().await;
     logs_batcher.shutdown().await;
     spans_batcher.shutdown().await;
+    metrics_batcher.shutdown().await;
     pool.close().await;
     tracing::info!("arrêt terminé");
     Ok(())
@@ -188,6 +206,10 @@ fn spawn_maintenance(
             if let Err(e) = db::ensure_span_partition_window(&pool, past_days, future_days).await {
                 tracing::warn!(error = %e, "maintenance: création de partitions (traces) échouée");
             }
+            if let Err(e) = db::ensure_metric_partition_window(&pool, past_days, future_days).await
+            {
+                tracing::warn!(error = %e, "maintenance: création de partitions (metrics) échouée");
+            }
             match db::purge_old_partitions(&pool, config.retention_days).await {
                 Ok(n) if n > 0 => {
                     tracing::info!(domain = "events", dropped = n, "partitions purgées")
@@ -209,6 +231,13 @@ fn spawn_maintenance(
                 Ok(_) => {}
                 Err(e) => tracing::warn!(error = %e, "maintenance: purge (traces) échouée"),
             }
+            match db::purge_old_metric_partitions(&pool, config.retention_days).await {
+                Ok(n) if n > 0 => {
+                    tracing::info!(domain = "metrics", dropped = n, "partitions purgées")
+                }
+                Ok(_) => {}
+                Err(e) => tracing::warn!(error = %e, "maintenance: purge (metrics) échouée"),
+            }
         }
     });
 
@@ -222,6 +251,70 @@ fn spawn_maintenance(
             anomaly.prune(now);
         }
     });
+}
+
+/// Démarre le moteur d'alerting si configuré (fichier de règles + ≥1 notifier). No-op sinon.
+fn spawn_alerting(pool: PgPool, config: Arc<Config>, shutdown: tokio::sync::watch::Receiver<bool>) {
+    use datacat_ingest::alerting::{
+        run_eval_loop, EmailConfig, EmailNotifier, Notifier, SlackNotifier,
+    };
+
+    let ac = &config.alerting;
+    let Some(rules_file) = ac.rules_file.clone() else {
+        tracing::info!("alerting désactivé (ALERT_RULES_FILE non défini)");
+        return;
+    };
+    if !ac.has_notifier() {
+        tracing::warn!(
+            "ALERT_RULES_FILE défini mais aucun notifier configuré — alerting désactivé"
+        );
+        return;
+    }
+    let rules = match datacat_ingest::alerting::load_rules(&rules_file) {
+        Ok(r) if !r.is_empty() => r,
+        Ok(_) => {
+            tracing::warn!(file = %rules_file, "fichier de règles vide — alerting désactivé");
+            return;
+        }
+        Err(e) => {
+            tracing::error!(file = %rules_file, error = %e, "chargement des règles échoué — alerting désactivé");
+            return;
+        }
+    };
+
+    let mut notifiers: Vec<Arc<dyn Notifier>> = Vec::new();
+    if let Some(url) = ac.slack_webhook_url.clone() {
+        notifiers.push(Arc::new(SlackNotifier::new(url)));
+    }
+    if let (Some(host), Some(from)) = (ac.smtp_host.clone(), ac.email_from.clone()) {
+        if !ac.email_to.is_empty() {
+            match EmailNotifier::new(&EmailConfig {
+                smtp_host: host,
+                smtp_port: ac.smtp_port,
+                username: ac.smtp_username.clone(),
+                password: ac.smtp_password.clone(),
+                from,
+                to: ac.email_to.clone(),
+            }) {
+                Ok(n) => notifiers.push(Arc::new(n)),
+                Err(e) => {
+                    tracing::error!(error = %e, "configuration e-mail invalide — canal ignoré")
+                }
+            }
+        }
+    }
+    if notifiers.is_empty() {
+        tracing::warn!("aucun notifier valide — alerting désactivé");
+        return;
+    }
+
+    let interval = ac.eval_interval;
+    tracing::info!(
+        rules = rules.len(),
+        notifiers = notifiers.len(),
+        "alerting activé"
+    );
+    tokio::spawn(run_eval_loop(pool, rules, notifiers, interval, shutdown));
 }
 
 /// Attend Ctrl-C ou SIGTERM pour déclencher l'arrêt propre.

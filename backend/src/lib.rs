@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod alerting;
 pub mod api;
 pub mod config;
 pub mod db;
@@ -15,6 +16,7 @@ pub mod events;
 pub mod grpc;
 pub mod ingest;
 pub mod logs;
+pub mod metrics;
 pub mod otlp;
 pub mod query;
 pub mod security;
@@ -30,6 +32,7 @@ use crate::config::{Config, ValidationLimits};
 use crate::events::model::StoredEvent;
 use crate::ingest::Ingestor;
 use crate::logs::StoredLog;
+use crate::metrics::StoredMetricPoint;
 use crate::security::{AnomalyGuard, RateLimiter, TokenVerifier};
 use crate::traces::StoredSpan;
 
@@ -44,6 +47,8 @@ pub struct AppState {
     pub logs: Ingestor<StoredLog>,
     /// Ingestion des traces OTLP (`/v1/traces`).
     pub spans: Ingestor<StoredSpan>,
+    /// Ingestion des métriques OTLP (`/v1/metrics`).
+    pub metric_points: Ingestor<StoredMetricPoint>,
     pub limiter: Arc<RateLimiter>,
     pub verifier: Arc<TokenVerifier>,
     pub anomaly: Arc<AnomalyGuard>,

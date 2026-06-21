@@ -2,8 +2,9 @@
 
 mod partitions;
 pub use partitions::{
-    drain_log_staging, drain_span_staging, drain_staging, ensure_log_partition_window,
-    ensure_partition_window, ensure_span_partition_window, purge_old_log_partitions,
+    drain_log_staging, drain_metric_staging, drain_span_staging, drain_staging,
+    ensure_log_partition_window, ensure_metric_partition_window, ensure_partition_window,
+    ensure_span_partition_window, purge_old_log_partitions, purge_old_metric_partitions,
     purge_old_partitions, purge_old_span_partitions,
 };
 

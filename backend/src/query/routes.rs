@@ -154,6 +154,66 @@ pub async fn query_trace(
 // ── Events ────────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Deserialize)]
+pub struct MetricsQuery {
+    pub name: Option<String>,
+    pub service: Option<String>,
+    pub from: Option<DateTime<Utc>>,
+    pub to: Option<DateTime<Utc>>,
+    pub limit: Option<i64>,
+}
+
+#[derive(Debug, Serialize, FromRow)]
+pub struct MetricRow {
+    pub time: DateTime<Utc>,
+    pub metric_name: String,
+    pub metric_type: String,
+    pub unit: Option<String>,
+    pub value_double: Option<f64>,
+    pub value_int: Option<i64>,
+    pub count: Option<i64>,
+    pub sum: Option<f64>,
+    pub buckets: Option<Value>,
+    pub service_name: Option<String>,
+    pub scope_name: Option<String>,
+    pub attributes: Value,
+}
+
+/// `GET /v1/query/metrics` — recherche de points de métriques (par nom / service / fenêtre).
+pub async fn query_metrics(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<MetricsQuery>,
+) -> AppResult<impl IntoResponse> {
+    authorize_query(&state, &headers)?;
+    let limit = clamp_limit(q.limit, 100, 1000);
+
+    let mut qb = QueryBuilder::<Postgres>::new(
+        "SELECT time, metric_name, metric_type, unit, value_double, value_int, count, sum, \
+         buckets, service_name, scope_name, attributes FROM metric_points WHERE true",
+    );
+    if let Some(n) = &q.name {
+        qb.push(" AND metric_name = ").push_bind(n.clone());
+    }
+    if let Some(s) = &q.service {
+        qb.push(" AND service_name = ").push_bind(s.clone());
+    }
+    if let Some(f) = q.from {
+        qb.push(" AND time >= ").push_bind(f);
+    }
+    if let Some(t) = q.to {
+        qb.push(" AND time <= ").push_bind(t);
+    }
+    qb.push(" ORDER BY time DESC LIMIT ").push_bind(limit);
+
+    let rows: Vec<MetricRow> = qb
+        .build_query_as()
+        .fetch_all(&state.pool)
+        .await
+        .map_err(db_err)?;
+    Ok(Json(json!({ "metrics": rows })))
+}
+
+#[derive(Debug, Deserialize)]
 pub struct EventsQuery {
     pub actor: Option<String>,
     pub session: Option<String>,

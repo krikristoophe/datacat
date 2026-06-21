@@ -45,14 +45,18 @@ dashmap = "6"
 
 thiserror = "2"
 anyhow = "1"
+# Trait objects async pour les notifiers d'alerting (Slack / e-mail).
+async-trait = "0.1"
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "json", "env-filter", "ansi"] }
 
-# JWKS (récupération des clés publiques) — TLS rustls, surface minimale.
+# JWKS (récupération des clés publiques) et notifications Slack (webhook) — TLS rustls.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-# Ingestion OTLP/gRPC des logs.
-opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic", "logs", "trace"] }
+# Notifications e-mail du moteur d'alerting (SMTP) — TLS rustls, surface minimale (pas d'openssl).
+lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "tokio1", "tokio1-rustls-tls", "builder", "hostname"] }
+# Ingestion OTLP/gRPC des logs, traces et métriques.
+opentelemetry-proto = { version = "0.32.0", default-features = false, features = ["gen-tonic", "logs", "trace", "metrics"] }
 tonic = { version = "0.14", default-features = false, features = ["server", "codegen", "transport", "router"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 

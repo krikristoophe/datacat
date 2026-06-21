@@ -4,6 +4,7 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 use opentelemetry_proto::tonic::collector::logs::v1::logs_service_server::LogsServiceServer;
+use opentelemetry_proto::tonic::collector::metrics::v1::metrics_service_server::MetricsServiceServer;
 use opentelemetry_proto::tonic::collector::trace::v1::trace_service_server::TraceServiceServer;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -11,6 +12,7 @@ use tonic::{Request, Status};
 
 use crate::error::AppError;
 use crate::logs::grpc::DatacatLogsService;
+use crate::metrics::grpc::DatacatMetricsService;
 use crate::traces::grpc::DatacatTracesService;
 use crate::AppState;
 
@@ -24,7 +26,10 @@ where
         .add_service(LogsServiceServer::new(DatacatLogsService::new(
             state.clone(),
         )))
-        .add_service(TraceServiceServer::new(DatacatTracesService::new(state)))
+        .add_service(TraceServiceServer::new(DatacatTracesService::new(
+            state.clone(),
+        )))
+        .add_service(MetricsServiceServer::new(DatacatMetricsService::new(state)))
         .serve_with_incoming_shutdown(incoming, shutdown)
         .await?;
     Ok(())

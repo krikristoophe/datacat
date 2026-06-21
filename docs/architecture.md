@@ -106,20 +106,23 @@ de taille, CORS, bannissement d'IP anormales, logs structurés traçables, TLS a
 |---|---|
 | **Stockage froid** (Parquet/Iceberg sur S3 EU) | `events` est déjà partitionnée par jour : un job d'export lit partition par partition vers Parquet, sans toucher l'ingestion. |
 | **Lecture analytique** (DataFusion/DuckDB) | Couche de lecture séparée branchée sur le froid (et/ou le chaud). Le cœur d'ingestion ne référence aucune lecture. Aucun index de lecture en v1 pour préserver le débit d'écriture ; ils seront créés côté froid. |
-| **Logs techniques** | Le modèle porte déjà `tenant_id` / `actor_id` / `session_id` comme clés de corrélation. `session_id` est documenté comme clé de jointure. |
+| **Logs techniques** | **Ingérés en v1** via `POST /v1/logs` (OTLP/HTTP), même socle générique partitionné/idempotent que les events, corrélés via `tenant_id` / `actor_id` / `session_id` et `trace_id`. Voir `otel-logs.md`. |
+| **Stockage froid S3** | Export Parquet partitionné par date via le crate `exporter/` (hors cœur d'ingestion). Voir `cold-storage.md`. |
 | **Scale-out écriture** (Citus / Redpanda) | Le writer est isolé derrière un canal : on peut insérer un tampon distribué devant, ou sharder via Citus, sans changer le contrat d'ingestion. |
 | **Scale-out lecture** (Ballista) | Garanti par le format ouvert (Iceberg) côté froid. |
 
 ## 8. Carte des modules (backend)
 
+Découpage en sous-modules cohérents (domaines au-dessus d'une infrastructure partagée) :
+
 | Module | Rôle |
 |---|---|
 | `config` | Configuration depuis l'environnement, valeurs par défaut sûres, validation au démarrage. |
-| `model` | Wire format + validation stricte (longueurs, profondeur/taille JSON, skew). |
-| `token` | Vérification JWT asymétrique (EdDSA/RS256), clé PEM ou JWKS, rotation par `kid`. |
-| `ratelimit` | Token buckets (global + par session) + fenêtre glissante de sessions/IP. |
-| `security` | Résolution d'IP (proxy de confiance) + détection d'anomalies / ban temporaire. |
-| `ingest` | Canal, batcher, COPY, merge idempotent, métriques. |
-| `db` | Pool, migrations, gestion des partitions, purge, drain du staging. |
-| `routes` | Handlers HTTP (`/v1/events`, `/healthz`, `/readyz`, `/stats`). |
-| `lib` | `AppState` + assemblage du routeur et des garde-fous (CORS, taille, timeout, traçage). |
+| `error`, `telemetry` | Erreurs typées (→ réponses HTTP) ; logs structurés. |
+| `events/model` | Wire format des events + validation stricte ; impl `Ingestable`. |
+| `logs/model` | Wire format OTLP des logs + aplatissement/corrélation/dédup ; impl `Ingestable`. |
+| `ingest` | **Générique** : trait `Ingestable`, canal, batcher, `COPY`, merge idempotent, métriques (partagé events + logs). |
+| `db` (+ `db/partitions`) | Pool, migrations, gestion/purge des partitions (events & logs), drain du staging. |
+| `security` (`token`, `ratelimit`, `anomaly`) | Vérif JWT asymétrique (PEM/JWKS, `kid`) ; token buckets + plafond sessions/IP ; résolution d'IP + ban d'anomalies. |
+| `api` (+ `api/routes`) | Assemblage du routeur + garde-fous (CORS, taille, timeout, traçage) ; handlers (`/v1/events`, `/v1/logs`, `/healthz`, `/readyz`, `/stats`). |
+| `lib` | `AppState` (ingestors events & logs) + déclarations de modules. |

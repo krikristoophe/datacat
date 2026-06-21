@@ -17,10 +17,13 @@ sur l'ingestion** : capturer des events de façon robuste, scalable et auditable
 ## Structure du dépôt
 
 ```
-backend/          API d'ingestion Axum + migrations sqlx + tests
-sdks/typescript/   SDK web (TypeScript)
-sdks/flutter/      SDK mobile (Dart, compatible Flutter)
-docs/             CONTRACT.md (source de vérité), déploiement, intégration, token, sécurité
+backend/          API d'ingestion Axum (events + logs OTLP) + migrations sqlx + tests
+  src/            sous-modules : api/ db/ events/ logs/ ingest/ security/ config telemetry error
+sdks/typescript/  SDK web (TypeScript)
+sdks/flutter/     SDK mobile (Dart, compatible Flutter)
+exporter/         export froid PostgreSQL → Parquet sur S3 (crate standalone)
+examples/         mini-projet d'intégration : backend Rust de démo + app React (events + logs)
+docs/             CONTRACT.md (source de vérité), architecture, déploiement, intégration, token, otel-logs, sécurité
 docker-compose.yml  PostgreSQL pour dev/test
 ```
 

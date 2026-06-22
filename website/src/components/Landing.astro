@@ -192,7 +192,10 @@ const STRINGS = {
 const GH = 'https://github.com/krikristoophe/datacat';
 ---
 
-<div class="dc">
+{/* `not-content` opts the whole landing out of Starlight's markdown auto-spacing/typography —
+    otherwise its owl selector adds a top-margin to every non-first element (incl. our grid cards),
+    raising the first card of each row. We style everything ourselves below. */}
+<div class="dc not-content">
   {/* ───────────────────────── Hero ───────────────────────── */}
   <section class="dc-hero">
     <div class="dc-hero__glow" aria-hidden="true"></div>

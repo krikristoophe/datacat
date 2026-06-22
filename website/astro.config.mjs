@@ -16,6 +16,10 @@ export default defineConfig({
       description:
         'Documentation for Datacat — a lightweight, self-hosted analytics & observability event-ingestion platform written in Rust.',
 
+      // Brand mark — used as the browser favicon and shown in the header next to the title.
+      favicon: '/favicon.svg',
+      logo: { src: './src/assets/logo.svg', alt: 'Datacat' },
+
       // Site-wide brand theme (palette, typography, polish). Landing-page styling is scoped
       // inside src/components/Landing.astro.
       customCss: ['./src/styles/theme.css'],

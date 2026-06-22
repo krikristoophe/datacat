@@ -14,7 +14,10 @@ interface Props {
 }
 const { lang = 'en' } = Astro.props;
 
-const base = import.meta.env.BASE_URL; // e.g. "/datacat/"
+// BASE_URL may come without a trailing slash (e.g. "/datacat"); normalise so links don't
+// collapse into "/datacatstart/" instead of "/datacat/start/".
+const rawBase = import.meta.env.BASE_URL;
+const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
 const link = (slug: string) => `${base}${lang === 'fr' ? 'fr/' : ''}${slug}`;
 
 const eventSnippet = `import { createDatacatClient } from "@datacat/sdk-web";
@@ -212,7 +215,7 @@ const tabId = `dc-tabs-${lang}`;
         </h1>
         <p class="dc-hero__sub">{STRINGS.subtitle}</p>
         <div class="dc-actions">
-          <a class="dc-btn dc-btn--primary" href={link('overview/')}>{STRINGS.ctaPrimary} →</a>
+          <a class="dc-btn dc-btn--primary" href={link('start/')}>{STRINGS.ctaPrimary} →</a>
           <a class="dc-btn dc-btn--ghost" href={link('quickstart/')}>{STRINGS.ctaSecondary}</a>
           <a class="dc-btn dc-btn--ghost" href={GH} target="_blank" rel="noopener">{STRINGS.ctaGithub} ↗</a>
         </div>

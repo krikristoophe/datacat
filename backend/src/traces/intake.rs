@@ -28,34 +28,26 @@ pub fn accept_spans(
         )));
     }
 
+    // Coût du rate limiting = nombre de spans SOUMIS (borné ci-dessus), capturé AVANT d'écarter
+    // les surdimensionnés (cf. revue de sécurité : sinon des records géants écartés coûteraient 1).
+    let submitted = parse.stored.len();
+
     // Garde-fou de taille par enregistrement (S-7) : un span surdimensionné est écarté
     // (perte tolérée §2) même si la requête entière reste sous `max_payload_bytes`.
-    let max_bytes = state.config.limits.max_otlp_record_bytes;
-    let before = parse.stored.len();
-    parse
-        .stored
-        .retain(|s| s.approx_content_bytes() <= max_bytes);
-    let dropped = (before - parse.stored.len()) as u64;
-    if dropped > 0 {
-        state
-            .spans
-            .metrics
-            .dropped_oversized_total
-            .fetch_add(dropped, Ordering::Relaxed);
-        tracing::warn!(
-            dropped,
-            max_bytes,
-            "spans OTLP au-delà de la taille max écartés"
-        );
-    }
+    crate::ingest::drop_oversized(
+        &mut parse.stored,
+        state.config.limits.max_otlp_record_bytes,
+        |s| s.approx_content_bytes(),
+        &state.spans.metrics,
+        "traces",
+    );
 
     let service_key = parse
         .stored
         .first()
         .and_then(|s| s.service_name.clone())
         .unwrap_or_else(|| ip.to_string());
-    // Coût = nombre de spans (borné ci-dessus), pas 1 (cf. revue de sécurité).
-    let cost = parse.stored.len().max(1) as u32;
+    let cost = submitted.max(1) as u32;
     if let Decision::Deny {
         scope,
         retry_after_secs,

@@ -12,15 +12,18 @@
 //!    n'enregistre **jamais** le store local `file://` : seul le bucket S3 configuré est résolu,
 //!    tout le reste (local, autre bucket, http…) est refusé. C'est le correctif de fond, en un
 //!    seul point, indépendant de la liste des fonctions de table de DataFusion.
-//! 2. [`ensure_read_only`] — rejet de tout plan logique qui n'est pas une lecture (DDL, DML,
-//!    `COPY`, statements), par principe de moindre privilège.
+//! 2. [`read_only_sql_options`] — options SQL en lecture seule passées à
+//!    `SessionContext::sql_with_options`. `verify_plan` rejette **récursivement et AVANT toute
+//!    exécution** tout DDL, DML, `COPY` ou statement. C'est crucial : `SessionContext::sql`
+//!    exécute *immédiatement* DDL et statements (`DROP TABLE`, `CREATE EXTERNAL TABLE`,
+//!    `SET …`) — un contrôle a posteriori sur le plan retourné arriverait trop tard.
 
 use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use datafusion::error::{DataFusionError, Result as DfResult};
 use datafusion::execution::object_store::ObjectStoreRegistry;
-use datafusion::logical_expr::LogicalPlan;
+use datafusion::prelude::SQLOptions;
 use object_store::ObjectStore;
 use url::{Position, Url};
 
@@ -91,20 +94,17 @@ impl ObjectStoreRegistry for S3OnlyObjectStoreRegistry {
     }
 }
 
-/// Rejette les plans qui ne sont pas en lecture seule (DDL / DML / `COPY` / statements).
+/// Options SQL en lecture seule : `verify_plan` refuse — récursivement (sous-requêtes/CTE
+/// comprises) et **avant exécution** — tout DDL, DML, `COPY` et statement (`SET`, `BEGIN`, …).
+/// À passer à [`SessionContext::sql_with_options`](datafusion::prelude::SessionContext::sql_with_options) :
+/// `SessionContext::sql` exécute immédiatement DDL et statements, donc seul un refus en amont
+/// (et non un contrôle sur le plan retourné) empêche réellement les effets de bord.
 /// `SELECT`, `EXPLAIN`, `ANALYZE` et les CTE restent autorisés.
-pub fn ensure_read_only(plan: &LogicalPlan) -> DfResult<()> {
-    match plan {
-        LogicalPlan::Dml(_) | LogicalPlan::Ddl(_) | LogicalPlan::Copy(_) => {
-            Err(DataFusionError::Execution(
-                "cold reader is read-only: DDL, DML and COPY statements are not permitted".into(),
-            ))
-        }
-        LogicalPlan::Statement(_) => Err(DataFusionError::Execution(
-            "cold reader is read-only: this statement type is not permitted".into(),
-        )),
-        _ => Ok(()),
-    }
+pub fn read_only_sql_options() -> SQLOptions {
+    SQLOptions::new()
+        .with_allow_ddl(false)
+        .with_allow_dml(false)
+        .with_allow_statements(false)
 }
 
 #[cfg(test)]
@@ -161,7 +161,12 @@ mod tests {
     async fn read_csv_local_file_is_denied_end_to_end() {
         let ctx = sandboxed_ctx();
         // L'inférence de schéma de read_csv passe par le registre → file:// refusé.
-        let planned = ctx.sql("SELECT * FROM read_csv('/etc/passwd')").await;
+        let planned = ctx
+            .sql_with_options(
+                "SELECT * FROM read_csv('/etc/passwd')",
+                read_only_sql_options(),
+            )
+            .await;
         let denied = match planned {
             Err(_) => true,
             Ok(df) => df.collect().await.is_err(),
@@ -173,7 +178,10 @@ mod tests {
     async fn read_parquet_local_file_is_denied_end_to_end() {
         let ctx = sandboxed_ctx();
         let planned = ctx
-            .sql("SELECT * FROM read_parquet('file:///etc/hosts')")
+            .sql_with_options(
+                "SELECT * FROM read_parquet('file:///etc/hosts')",
+                read_only_sql_options(),
+            )
             .await;
         let denied = match planned {
             Err(_) => true,
@@ -186,25 +194,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn copy_to_is_rejected_as_read_only() {
+    async fn ddl_is_rejected_before_execution() {
+        // DROP/CREATE EXTERNAL TABLE doivent être refusés à la planification (verify_plan),
+        // AVANT que DataFusion ne les exécute (sinon la table enregistrée serait supprimée/repointée).
         let ctx = sandboxed_ctx();
-        // COPY … TO doit être rejeté par ensure_read_only (avant toute écriture).
-        let df = ctx
-            .sql("COPY (SELECT 1 AS x) TO 'file:///tmp/datacat-x.csv' STORED AS CSV")
-            .await
-            .expect("COPY doit produire un plan");
         assert!(
-            ensure_read_only(df.logical_plan()).is_err(),
-            "COPY doit être refusé (lecture seule)"
+            ctx.sql_with_options("DROP TABLE events", read_only_sql_options())
+                .await
+                .is_err(),
+            "DROP TABLE doit être refusé avant exécution"
+        );
+        assert!(
+            ctx.sql_with_options(
+                "CREATE EXTERNAL TABLE t STORED AS PARQUET LOCATION 's3://b/x'",
+                read_only_sql_options(),
+            )
+            .await
+            .is_err(),
+            "CREATE EXTERNAL TABLE doit être refusé avant exécution"
         );
     }
 
     #[tokio::test]
-    async fn select_is_allowed_by_read_only_guard() {
+    async fn set_statement_is_rejected() {
+        // SET mute la config de session : doit être refusé avant exécution.
         let ctx = sandboxed_ctx();
-        let df = ctx.sql("SELECT 1 AS x").await.unwrap();
         assert!(
-            ensure_read_only(df.logical_plan()).is_ok(),
+            ctx.sql_with_options(
+                "SET datafusion.execution.target_partitions = 1",
+                read_only_sql_options(),
+            )
+            .await
+            .is_err(),
+            "SET doit être refusé"
+        );
+    }
+
+    #[tokio::test]
+    async fn copy_to_is_rejected() {
+        let ctx = sandboxed_ctx();
+        assert!(
+            ctx.sql_with_options(
+                "COPY (SELECT 1 AS x) TO 'file:///tmp/datacat-x.csv' STORED AS CSV",
+                read_only_sql_options(),
+            )
+            .await
+            .is_err(),
+            "COPY doit être refusé (écriture)"
+        );
+    }
+
+    #[tokio::test]
+    async fn select_is_allowed() {
+        let ctx = sandboxed_ctx();
+        assert!(
+            ctx.sql_with_options("SELECT 1 AS x", read_only_sql_options())
+                .await
+                .is_ok(),
             "un SELECT pur doit être autorisé"
         );
     }

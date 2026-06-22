@@ -28,34 +28,26 @@ pub fn accept_metric_points(
         )));
     }
 
+    // Coût du rate limiting = nombre de points SOUMIS (borné ci-dessus), capturé AVANT d'écarter
+    // les surdimensionnés (cf. revue de sécurité : sinon des records géants écartés coûteraient 1).
+    let submitted = parse.stored.len();
+
     // Garde-fou de taille par enregistrement (S-7) : un point surdimensionné est écarté
     // (perte tolérée §2) même si la requête entière reste sous `max_payload_bytes`.
-    let max_bytes = state.config.limits.max_otlp_record_bytes;
-    let before = parse.stored.len();
-    parse
-        .stored
-        .retain(|p| p.approx_content_bytes() <= max_bytes);
-    let dropped = (before - parse.stored.len()) as u64;
-    if dropped > 0 {
-        state
-            .metric_points
-            .metrics
-            .dropped_oversized_total
-            .fetch_add(dropped, Ordering::Relaxed);
-        tracing::warn!(
-            dropped,
-            max_bytes,
-            "points de métriques OTLP au-delà de la taille max écartés"
-        );
-    }
+    crate::ingest::drop_oversized(
+        &mut parse.stored,
+        state.config.limits.max_otlp_record_bytes,
+        |p| p.approx_content_bytes(),
+        &state.metric_points.metrics,
+        "metrics",
+    );
 
     let service_key = parse
         .stored
         .first()
         .and_then(|p| p.service_name.clone())
         .unwrap_or_else(|| ip.to_string());
-    // Coût = nombre de points (borné ci-dessus), pas 1 (cf. revue de sécurité).
-    let cost = parse.stored.len().max(1) as u32;
+    let cost = submitted.max(1) as u32;
     if let Decision::Deny {
         scope,
         retry_after_secs,

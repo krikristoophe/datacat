@@ -109,6 +109,37 @@ impl IngestMetrics {
     }
 }
 
+/// Écarte les enregistrements dont la taille approximative dépasse `max_bytes` (garde-fou par
+/// enregistrement OTLP, S-7), incrémente `dropped_oversized_total` et journalise. Partagé par les
+/// trois domaines OTLP (logs/traces/metrics) pour éviter toute dérive entre eux. Retourne le
+/// nombre écarté.
+pub fn drop_oversized<T, F>(
+    stored: &mut Vec<T>,
+    max_bytes: usize,
+    size_of: F,
+    metrics: &IngestMetrics,
+    domain: &'static str,
+) -> u64
+where
+    F: Fn(&T) -> usize,
+{
+    let before = stored.len();
+    stored.retain(|r| size_of(r) <= max_bytes);
+    let dropped = (before - stored.len()) as u64;
+    if dropped > 0 {
+        metrics
+            .dropped_oversized_total
+            .fetch_add(dropped, Ordering::Relaxed);
+        tracing::warn!(
+            dropped,
+            max_bytes,
+            domain,
+            "OTLP records over size limit dropped"
+        );
+    }
+    dropped
+}
+
 /// Point d'entrée d'enfilage (utilisé par les handlers HTTP). Générique sur le type d'enregistrement.
 pub struct Ingestor<T: Ingestable> {
     tx: mpsc::Sender<Vec<T>>,

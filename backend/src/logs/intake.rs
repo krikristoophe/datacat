@@ -41,26 +41,20 @@ pub fn accept_logs(
         )));
     }
 
+    // Coût du rate limiting = nombre de records SOUMIS (borné par max_logs_records ci-dessus),
+    // capturé AVANT d'écarter les surdimensionnés : sinon une requête pleine de records géants
+    // tous écartés ne coûterait qu'un jeton et contournerait le débit réel (revue de sécurité).
+    let submitted = parse.stored.len();
+
     // Garde-fou de taille par enregistrement (S-7) : un seul log surdimensionné est écarté
     // (perte tolérée §2) même si la requête entière reste sous `max_payload_bytes`.
-    let max_bytes = state.config.limits.max_otlp_record_bytes;
-    let before = parse.stored.len();
-    parse
-        .stored
-        .retain(|l| l.approx_content_bytes() <= max_bytes);
-    let dropped = (before - parse.stored.len()) as u64;
-    if dropped > 0 {
-        state
-            .logs
-            .metrics
-            .dropped_oversized_total
-            .fetch_add(dropped, Ordering::Relaxed);
-        tracing::warn!(
-            dropped,
-            max_bytes,
-            "logs OTLP au-delà de la taille max écartés"
-        );
-    }
+    crate::ingest::drop_oversized(
+        &mut parse.stored,
+        state.config.limits.max_otlp_record_bytes,
+        |l| l.approx_content_bytes(),
+        &state.logs.metrics,
+        "logs",
+    );
 
     // Rate limiting : la clé fine est le `service.name` (source de confiance pour des logs
     // service-à-service), à défaut l'IP. Le plafond par IP limite alors le nombre de services
@@ -70,9 +64,7 @@ pub fn accept_logs(
         .first()
         .and_then(|l| l.service_name.clone())
         .unwrap_or_else(|| ip.to_string());
-    // Coût = nombre de records (borné par max_logs_records ci-dessus), pas 1 : sinon une requête
-    // de 2048 records ne coûterait qu'un jeton et contournerait le débit réel (revue de sécurité).
-    let cost = parse.stored.len().max(1) as u32;
+    let cost = submitted.max(1) as u32;
     if let Decision::Deny {
         scope,
         retry_after_secs,

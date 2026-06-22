@@ -16,7 +16,7 @@ use std::sync::Arc;
 use url::Url;
 
 use crate::config::{build_object_store, ColdConfig};
-use crate::sandbox::{ensure_read_only, S3OnlyObjectStoreRegistry};
+use crate::sandbox::{read_only_sql_options, S3OnlyObjectStoreRegistry};
 use crate::schema::schema_for_table;
 
 /// Moteur de lecture analytique sur le stockage froid.
@@ -141,14 +141,15 @@ impl ColdReader {
     /// Les tables doivent avoir été enregistrées au préalable via
     /// [`register_table`](Self::register_table).
     pub async fn execute_sql(&self, sql: &str) -> anyhow::Result<Vec<RecordBatch>> {
+        // Sandbox S-6 : `sql_with_options` rejette DDL/DML/COPY/statements via `verify_plan`
+        // AVANT toute exécution (DataFusion exécute DDL et statements immédiatement, donc un
+        // contrôle a posteriori arriverait trop tard). Les accès fichier hors du bucket S3
+        // configuré sont bloqués par `S3OnlyObjectStoreRegistry`.
         let df = self
             .ctx
-            .sql(sql)
+            .sql_with_options(sql, read_only_sql_options())
             .await
             .with_context(|| format!("parsing SQL: {sql}"))?;
-
-        // Sandbox S-6 : refuse tout plan qui n'est pas en lecture seule (DDL/DML/COPY).
-        ensure_read_only(df.logical_plan()).context("rejecting non-read-only SQL")?;
 
         let batches = df.collect().await.context("executing SQL query")?;
         Ok(batches)

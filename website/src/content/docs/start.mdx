@@ -1,0 +1,46 @@
+---
+title: Start here
+description: Your map of the Datacat documentation — tutorials, guides and reference.
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+New to Datacat? Pick a path. **Tutorials** take you end to end; **guides** are task-focused;
+**reference** is the precise contract for each piece.
+
+## Tutorials — learn by doing
+
+<CardGrid>
+  <LinkCard title="Track your first event" href="../tutorials/first-event/"
+    description="Stand up Datacat locally, send a product event from the web SDK, and confirm it landed." />
+  <LinkCard title="Instrument a service with OTLP" href="../tutorials/instrument-a-service/"
+    description="Ship OpenTelemetry logs, traces and metrics, and correlate them by trace_id." />
+  <LinkCard title="Alert to Slack" href="../tutorials/alert-to-slack/"
+    description="Define a project rule that watches your error rate and posts to Slack." />
+</CardGrid>
+
+## Guides — get things done
+
+<CardGrid>
+  <LinkCard title="Quickstart" href="../quickstart/" description="Empty checkout to a running ingestion service in minutes." />
+  <LinkCard title="Installation" href="../installation/" description="Build, configure and run the backend for real." />
+  <LinkCard title="SDKs" href="../sdks/" description="The TypeScript (web) and Dart (Flutter) client SDKs." />
+  <LinkCard title="Logs & metrics with Docker" href="../docker-telemetry/" description="Ship container telemetry on Compose and Swarm." />
+</CardGrid>
+
+## Reference — the precise contract
+
+<CardGrid>
+  <LinkCard title="Architecture" href="../architecture/" description="The write path: staging, micro-batch, partitions, cold export." />
+  <LinkCard title="Event contract" href="../contract/" description="Wire format, idempotency and the token rules." />
+  <LinkCard title="Configuration" href="../configuration/" description="The unified TOML config and per-project files." />
+  <LinkCard title="Alerting" href="../alerting/" description="Every rule kind and notification channel." />
+</CardGrid>
+
+## Operate
+
+<CardGrid>
+  <LinkCard title="Deployment" href="../deployment/" description="Run Datacat in production." />
+  <LinkCard title="Security" href="../security/" description="The HDS-grade posture and controls." />
+  <LinkCard title="Companion" href="../companion/" description="Bidirectional heartbeat across nodes." />
+</CardGrid>

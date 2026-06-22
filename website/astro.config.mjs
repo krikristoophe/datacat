@@ -47,6 +47,16 @@ export default defineConfig({
       // Sidebar groups. `label` is the English label; `translations` provides
       // the French label so the built-in language picker shows localized groups.
       sidebar: [
+        { slug: 'start', label: 'Start here', translations: { fr: 'Commencer ici' } },
+        {
+          label: 'Tutorials',
+          translations: { fr: 'Tutoriels' },
+          items: [
+            { slug: 'tutorials/first-event' },
+            { slug: 'tutorials/instrument-a-service' },
+            { slug: 'tutorials/alert-to-slack' },
+          ],
+        },
         {
           label: 'Guides',
           translations: { fr: 'Guides' },

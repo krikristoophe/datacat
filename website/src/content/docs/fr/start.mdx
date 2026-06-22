@@ -1,0 +1,46 @@
+---
+title: Commencer ici
+description: Votre carte de la documentation Datacat — tutoriels, guides et référence.
+---
+
+import { Card, CardGrid, LinkCard } from '@astrojs/starlight/components';
+
+Nouveau sur Datacat ? Choisissez un chemin. Les **tutoriels** vous emmènent de bout en bout ; les
+**guides** sont orientés tâche ; la **référence** est le contrat précis de chaque brique.
+
+## Tutoriels — apprendre en faisant
+
+<CardGrid>
+  <LinkCard title="Tracer votre premier event" href="../tutorials/first-event/"
+    description="Lancer Datacat en local, envoyer un event produit depuis le SDK web, et vérifier sa persistance." />
+  <LinkCard title="Instrumenter un service avec OTLP" href="../tutorials/instrument-a-service/"
+    description="Envoyer logs, traces et métriques OpenTelemetry, et les corréler par trace_id." />
+  <LinkCard title="Alerter sur Slack" href="../tutorials/alert-to-slack/"
+    description="Définir une règle de projet qui surveille votre taux d'erreur et poste sur Slack." />
+</CardGrid>
+
+## Guides — passer à l'action
+
+<CardGrid>
+  <LinkCard title="Démarrage rapide" href="../quickstart/" description="D'un dépôt vide à un service d'ingestion qui tourne en quelques minutes." />
+  <LinkCard title="Installation" href="../installation/" description="Compiler, configurer et lancer le backend pour de vrai." />
+  <LinkCard title="SDKs" href="../sdks/" description="Les SDK clients TypeScript (web) et Dart (Flutter)." />
+  <LinkCard title="Logs & métriques avec Docker" href="../docker-telemetry/" description="Acheminer la télémétrie de conteneurs sur Compose et Swarm." />
+</CardGrid>
+
+## Référence — le contrat précis
+
+<CardGrid>
+  <LinkCard title="Architecture" href="../architecture/" description="Le chemin d'écriture : staging, micro-batch, partitions, export froid." />
+  <LinkCard title="Contrat d'event" href="../contract/" description="Wire format, idempotence et règles de token." />
+  <LinkCard title="Configuration" href="../configuration/" description="La config TOML unifiée et les fichiers par projet." />
+  <LinkCard title="Alerting" href="../alerting/" description="Tous les types de règles et canaux de notification." />
+</CardGrid>
+
+## Exploiter
+
+<CardGrid>
+  <LinkCard title="Déploiement" href="../deployment/" description="Faire tourner Datacat en production." />
+  <LinkCard title="Sécurité" href="../security/" description="La posture niveau HDS et les contrôles." />
+  <LinkCard title="Companion" href="../companion/" description="Heartbeat bidirectionnel entre nœuds." />
+</CardGrid>

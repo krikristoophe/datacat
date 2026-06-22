@@ -87,6 +87,17 @@ cd website && npm install && npm run build
 
 Contribution guide (for agents & humans): [`CLAUDE.md`](CLAUDE.md).
 
+## Roadmap
+
+Planned for later (beyond the current v1 ingestion scope):
+
+1. Deployment guide with Traefik (reverse proxy + TLS).
+2. Prepare the API routes and SDKs for embedding in a UI.
+3. Build a UI (dashboard) with SSO login, etc.
+4. Support databases beyond PostgreSQL (e.g. MySQL, or an embedded DuckDB).
+5. Publish the SDKs to npm.
+6. Security skills (reusable, automated security checks).
+
 ## License
 
 Proprietary — internal use.

@@ -1,35 +1,36 @@
 ---
-title: "Overview"
-description: "Index of the Datacat documentation: contract, architecture, integration, telemetry, reads."
+title: What is Datacat?
+description: Datacat in a nutshell — what you can do with it, and where to go next depending on what you want to ship.
 ---
 
-## Contract & design
-| Document | Contents |
-|---|---|
-| [Contract](../contract/) | **Source of truth**: event wire format + token contract (backend & SDKs). |
-| [Architecture](../architecture/) | Design decisions (idempotence × partitioning, write path, scalability). |
-| [Security](../security/) | Threat model, controls, HDS audit posture. |
+Datacat is a **self-hosted ingestion platform** for product analytics and observability. You run it
+on your own infrastructure (PostgreSQL is the only dependency), point your apps and services at it,
+and keep full control of your users' data — useful when that data is sensitive or regulated
+(health, HDS, GDPR).
 
-## Integration & deployment
-| Document | Contents |
-|---|---|
-| [Token](../token/) | Token issuance specification for consumer backends. |
-| [Deployment](../deployment/) | Simple, reproducible deployment (Docker, env, migrations, retention, health). |
+## What you can do with it
 
-## Telemetry (OpenTelemetry)
-| Document | Contents |
-|---|---|
-| [OTLP logs](../otel-logs/) | OTLP **log** ingestion (HTTP + gRPC) + service token + correlation. |
-| [OTLP metrics](../otel-metrics/) | OTLP **metric** ingestion (gauge/sum/histogram). |
-| [Alerting](../alerting/) | **Alerting** engine (rules, cooldown) + Slack & e-mail notifications. |
+- **Capture product events** — what users do in your app — from web and mobile, with strict
+  idempotency so retries never double-count.
+- **Collect observability** — logs, traces and metrics over OpenTelemetry (OTLP) — from your
+  services, correlated with those product events by tenant, user and session.
+- **Read your data** — query recent data from PostgreSQL (hot) or long-term data exported to
+  Parquet on S3 (cold), or let an AI agent explore it through the MCP server.
+- **Get alerted** — per-project rules on error rates, latency, anomalies and more, routed to Slack,
+  e-mail or webhooks.
 
-## Reading & operations
-| Document | Contents |
-|---|---|
-| [Hot reads](../read-hot/) | **Hot** read layer (`/v1/query/*`). |
-| [Cold reads](../read-cold/) | **Cold** reads (DataFusion over Parquet on S3). |
-| [Cold storage](../cold-storage/) | Cold export PostgreSQL → Parquet on S3 (Iceberg-friendly). |
-| [MCP](../mcp/) | **MCP** server: read access for an agent (Claude) — debug, exploration, correlation. |
+Everything runs on a database you already know, with no Kafka, ClickHouse or Zookeeper to operate.
 
-> OTLP **traces** (HTTP + gRPC) and logs↔traces correlation are described in
-> [Architecture](../architecture/) §7 and covered by [Hot reads](../read-hot/) (`/v1/query/traces`).
+## Where to start
+
+- **Just trying it?** Run it locally in minutes with the [Quickstart](../quickstart/), then
+  [track your first event](../tutorials/first-event/).
+- **Adding it to your product?** Pick your surface in **Integrate**:
+  [web app](../integrate/web-app/), [backend](../integrate/backend/),
+  [Flutter](../integrate/flutter/), or an existing
+  [OpenTelemetry](../integrate/opentelemetry/) setup.
+- **Putting it in production?** See [Installation](../installation/), [Configuration](../configuration/)
+  and [Deployment](../deployment/).
+
+Looking for the exact wire format, token rules or internals? Those live under **Reference**
+([contract](../contract/), [architecture](../architecture/), [security](../security/)).

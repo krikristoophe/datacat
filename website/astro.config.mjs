@@ -46,8 +46,25 @@ export default defineConfig({
 
       // Sidebar groups. `label` is the English label; `translations` provides
       // the French label so the built-in language picker shows localized groups.
+      // Usage-first: how to integrate and use Datacat comes first; the technical project docs
+      // (wire format, protocol, internals) are grouped under "Reference" at the bottom.
       sidebar: [
         { slug: 'start', label: 'Start here', translations: { fr: 'Commencer ici' } },
+        {
+          label: 'Get started',
+          translations: { fr: 'Premiers pas' },
+          items: [{ slug: 'overview' }, { slug: 'quickstart' }, { slug: 'installation' }],
+        },
+        {
+          label: 'Integrate',
+          translations: { fr: 'Intégrer' },
+          items: [
+            { slug: 'integrate/web-app' },
+            { slug: 'integrate/backend' },
+            { slug: 'integrate/flutter' },
+            { slug: 'integrate/opentelemetry' },
+          ],
+        },
         {
           label: 'Tutorials',
           translations: { fr: 'Tutoriels' },
@@ -58,52 +75,33 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Guides',
-          translations: { fr: 'Guides' },
+          label: 'Use Datacat',
+          translations: { fr: 'Utiliser' },
           items: [
-            { slug: 'quickstart' },
-            { slug: 'installation' },
             { slug: 'sdks' },
-            { slug: 'docker-telemetry' },
+            { slug: 'alerting' },
+            { slug: 'read-hot' },
+            { slug: 'read-cold' },
+            { slug: 'mcp' },
             { slug: 'companion' },
+            { slug: 'docker-telemetry' },
           ],
         },
         {
-          label: 'Getting Started',
-          translations: { fr: 'Premiers pas' },
+          label: 'Deploy & operate',
+          translations: { fr: 'Déployer & exploiter' },
+          items: [{ slug: 'configuration' }, { slug: 'deployment' }, { slug: 'cold-storage' }],
+        },
+        {
+          label: 'Reference',
+          translations: { fr: 'Référence' },
           items: [
-            { slug: 'overview' },
             { slug: 'architecture' },
-            { slug: 'configuration' },
-          ],
-        },
-        {
-          label: 'Ingestion',
-          translations: { fr: 'Ingestion' },
-          items: [
             { slug: 'contract' },
             { slug: 'token' },
             { slug: 'otel-logs' },
             { slug: 'otel-metrics' },
             { slug: 'traces' },
-          ],
-        },
-        {
-          label: 'Reading',
-          translations: { fr: 'Lecture' },
-          items: [
-            { slug: 'read-hot' },
-            { slug: 'read-cold' },
-            { slug: 'mcp' },
-          ],
-        },
-        {
-          label: 'Operations',
-          translations: { fr: 'Exploitation' },
-          items: [
-            { slug: 'alerting' },
-            { slug: 'cold-storage' },
-            { slug: 'deployment' },
             { slug: 'security' },
           ],
         },

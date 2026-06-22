@@ -211,7 +211,6 @@ Ces briques ne sont **pas** construites en v1. La v1 doit seulement être conçu
 - ClickHouse, Kafka, Zookeeper, Redpanda, Citus (préparés conceptuellement, non déployés).
 - Authentification forte de l'utilisateur sur l'endpoint d'ingestion (le token d'ingestion est un filtre de qualité, pas une authentification du contenu — voir section 7.3).
 - **Émission** du token (signature côté backend consommateur) et toute modification de Swappy ou d'un autre backend : hors scope. Seul le **contrat** est documenté (section 7.3.1), à charge de chaque projet de l'implémenter.
-- Gestion RGPD applicative (effacement, durées, etc.) — hors scope de ce système.
 
 ## 12. Critères d'acceptation
 

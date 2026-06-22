@@ -107,5 +107,3 @@ authentication of the content.
   requirement would fall outside the analytics scope and require a different mechanism.
 - Loss tolerance (under overload) is **intentional** and bounded; **never** at the cost of a
   duplicate.
-- No application-level GDPR handling in v1 (out of scope, spec §11) — to be handled at the
-  organizational/hosting level.

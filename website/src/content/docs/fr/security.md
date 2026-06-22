@@ -108,5 +108,3 @@ qualité du trafic*, pas une authentification du contenu.
   forte du contenu sortirait du cadre analytics et nécessiterait un autre mécanisme.
 - La tolérance à la perte (sous surcharge) est **intentionnelle** et bornée ; **jamais** au prix
   d'un doublon.
-- Pas de gestion RGPD applicative en v1 (hors scope, cahier §11) — à traiter au niveau
-  organisationnel/hébergement.

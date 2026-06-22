@@ -16,6 +16,10 @@ export default defineConfig({
       description:
         'Documentation for Datacat — a lightweight, self-hosted analytics & observability event-ingestion platform written in Rust.',
 
+      // Site-wide brand theme (palette, typography, polish). Landing-page styling is scoped
+      // inside src/components/Landing.astro.
+      customCss: ['./src/styles/theme.css'],
+
       // Dark-first, clean/minimal aesthetic.
       // Pagefind search is enabled by default in Starlight; the dark theme is
       // the default color scheme. We keep the light scheme available too.

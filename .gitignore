@@ -44,3 +44,6 @@ sdks/flutter/pubspec.lock
 *.swp
 .idea/
 .vscode/
+
+# Local agent tooling (preview launch config, etc.)
+/.claude/

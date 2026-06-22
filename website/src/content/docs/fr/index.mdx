@@ -1,46 +1,14 @@
 ---
-title: Datacat
-description: Ingestion analytics & observabilité idempotente et auto-hébergée sur PostgreSQL.
+title: Datacat — ingestion d'events & d'observabilité auto-hébergée
+description: Ingestion analytics & observabilité idempotente et auto-hébergée pour events, logs, traces et métriques — sur PostgreSQL seul.
 template: splash
-hero:
-  tagline: Ingestion analytics & observabilité auto-hébergée — events, logs, traces et métriques, sur PostgreSQL seul.
-  actions:
-    - text: Commencer
-      link: /datacat/fr/overview/
-      icon: right-arrow
-    - text: Voir sur GitHub
-      link: https://github.com/krikristoophe/datacat
-      icon: external
-      variant: minimal
+editUrl: false
+pagefind: false
+head:
+  - tag: style
+    content: 'main>.content-panel:first-child{display:none}main>.content-panel{border-top:0}'
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import Landing from '../../../components/Landing.astro';
 
-<CardGrid stagger>
-  <Card title="Centré ingestion" icon="rocket">
-    Un chemin d'écriture conçu pour le débit : COPY vers une table de staging UNLOGGED,
-    micro-batch, et tables partitionnées par le temps. Tolérant à la perte d'une infime fraction
-    d'events — jamais aux doublons.
-  </Card>
-  <Card title="PostgreSQL uniquement" icon="setting">
-    Une seule base comme stockage central. Pas de Kafka, ClickHouse ni Zookeeper. Des frontières
-    nettes entre ingestion, stockage et lecture : léger maintenant, scalable plus tard.
-  </Card>
-  <Card title="Strictement idempotent" icon="approve-check">
-    Un `event_id` donné (ou l'identité d'un log/span/point de métrique) ne compte qu'une fois, même
-    après retries — garanti au niveau stockage via `ON CONFLICT DO NOTHING`.
-  </Card>
-  <Card title="OpenTelemetry natif" icon="puzzle">
-    Ingestion OTLP des logs, traces et métriques en HTTP et gRPC, corrélés aux events produit. Une
-    couche de lecture (chaude PostgreSQL / froide Parquet), un alerting modulable et un serveur MCP.
-  </Card>
-  <Card title="Auditable & sécurisé" icon="document">
-    Validation stricte des entrées, endpoint public défendu côté serveur, vérification asymétrique
-    du token (clé publique seule), TLS, et configuration TOML avec secrets gardés dans l'environnement.
-  </Card>
-  <Card title="Alerting configurable" icon="bell">
-    Règles par projet : taux d'erreur, percentiles de latence, heartbeats, pics, conditions
-    composites, détection de nouvelles erreurs et anomalies statistiques — routées vers Slack,
-    e-mail ou webhooks.
-  </Card>
-</CardGrid>
+<Landing lang="fr" />

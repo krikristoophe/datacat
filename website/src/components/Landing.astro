@@ -22,15 +22,17 @@ const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
 const link = (slug: string) => `${base}${lang === 'fr' ? 'fr/' : ''}${slug}`;
 
 // The only code on the page: a "look how little it takes" hero snippet (sells ease of adoption).
+// Short lines on purpose: this sits in a fixed-width hero card, so keep every line
+// comfortably under ~54 chars to avoid horizontal clipping.
 const eventSnippet = `import { createDatacatClient } from "@datacat/sdk-web";
 
 const datacat = createDatacatClient({
-  endpoint: "https://ingest.example.com/v1/events",
-  getToken: () => fetch("/api/analytics-token").then((r) => r.text()),
+  endpoint: "https://you.example.com/v1/events",
+  getToken: () => fetchToken(),  // your short-lived JWT
 });
 
-datacat.identify({ actorId: "user-123", tenantId: "clinic-7" });
-datacat.track("appointment_booked", { duration_ms: 412 });`;
+datacat.identify({ actorId: "user-123" });
+datacat.track("booking_confirmed", { ms: 412 });`;
 
 const STRINGS = {
   en: {
@@ -458,8 +460,9 @@ const GH = 'https://github.com/krikristoophe/datacat';
     border-radius: 0;
     border: none;
     background: transparent !important;
-    font-size: 0.84rem;
+    font-size: 0.8rem;
     padding: 1rem 1.1rem;
+    overflow-x: auto; /* never clip if a line is long; scroll inside the card */
   }
 
   /* Pillars strip */
@@ -471,9 +474,11 @@ const GH = 'https://github.com/krikristoophe/datacat';
     padding: 0;
     display: grid;
     grid-template-columns: repeat(4, 1fr);
+    align-items: stretch;
     gap: 0.85rem;
   }
   .dc-pillar {
+    height: 100%;
     border: 1px solid var(--dc-edge);
     border-radius: 12px;
     padding: 0.95rem 1rem;
@@ -522,9 +527,11 @@ const GH = 'https://github.com/krikristoophe/datacat';
   .dc-signals {
     display: grid;
     grid-template-columns: repeat(4, 1fr);
+    align-items: stretch;
     gap: 0.9rem;
   }
   .dc-signal {
+    height: 100%;
     border: 1px solid var(--dc-edge);
     border-radius: 14px;
     padding: 1.1rem 1.15rem;
@@ -555,9 +562,11 @@ const GH = 'https://github.com/krikristoophe/datacat';
   .dc-features {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
+    align-items: stretch;
     gap: 1rem;
   }
   .dc-card {
+    height: 100%;
     position: relative;
     border: 1px solid var(--dc-edge);
     border-radius: 16px;

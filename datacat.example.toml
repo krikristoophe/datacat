@@ -33,6 +33,18 @@ partition_future_days = 2
 # Sous-sections optionnelles : [ingest.limits], [ingest.rate_limit], [ingest.anomaly]
 # (valeurs par défaut sûres si omises).
 
+# [ingest.limits]
+# max_batch_events = 500             # events par requête /v1/events
+# max_payload_bytes = 1048576        # taille max d'un corps de requête events
+# max_properties_bytes = 16384       # taille max du JSON `properties` d'un event
+# max_string_len = 200               # longueur max d'un champ chaîne d'event
+# max_json_depth = 16
+# max_past_skew = "31d"              # ancienneté max acceptée d'un horodatage
+# max_future_skew = "24h"           # avance max acceptée
+# max_otlp_record_bytes = 65536      # taille max par enregistrement OTLP (log/span/point) :
+#                                    # un seul enregistrement au-delà est écarté (perte tolérée),
+#                                    # même si la requête entière reste sous la limite globale.
+
 [token]
 # Vérification du token d'ingestion par signature asymétrique (clé publique seule).
 # `enabled = false` n'est accepté qu'avec `--features dev` (garde-fou production).

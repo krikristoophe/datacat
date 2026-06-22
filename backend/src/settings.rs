@@ -354,6 +354,7 @@ struct LimitsSection {
     max_json_depth: usize,
     max_past_skew: String,
     max_future_skew: String,
+    max_otlp_record_bytes: usize,
 }
 impl Default for LimitsSection {
     fn default() -> Self {
@@ -365,6 +366,7 @@ impl Default for LimitsSection {
             max_json_depth: 16,
             max_past_skew: "31d".into(),
             max_future_skew: "24h".into(),
+            max_otlp_record_bytes: 65_536,
         }
     }
 }
@@ -618,6 +620,7 @@ fn build_config(file: &FileConfig) -> Result<Config> {
         max_json_depth: i.limits.max_json_depth,
         max_past_skew: dur(&i.limits.max_past_skew, "ingest.limits.max_past_skew")?,
         max_future_skew: dur(&i.limits.max_future_skew, "ingest.limits.max_future_skew")?,
+        max_otlp_record_bytes: i.limits.max_otlp_record_bytes,
     };
 
     let rate_limit = RateLimitConfig {

@@ -42,6 +42,7 @@ remediation status.
 | S-3 | Medium | OTLP intake (logs/traces/metrics) | Rate limiter charged **1 token regardless of record count** (up to 2048), so a packed request bypassed the real write-rate ceiling. Cost is now the record count. |
 | S-4 | Medium | `grpc.rs` | No gRPC decode-size limit (HTTP had per-route body limits) — silently relied on tonic's 4 MB default. Now `max_decoding_message_size` is set from `max_logs_payload_bytes`. |
 | S-5 | Low | `api/routes.rs` | serde parse errors echoed a fragment of the (potentially PII) body back to the client. Now logged server-side only; client gets a generic 400. |
+| S-7 | Medium | OTLP intake (logs/traces/metrics) | No **per-record** size cap on OTLP — a single multi-MB log body / span with tens of thousands of events was stored verbatim (bounded only by record count + total body size). Each record's variable content is now measured (`approx_content_bytes()`); records over `max_otlp_record_bytes` (default 64 KiB) are dropped (tolerant-loss), counted in `dropped_oversized_total`, and logged at `warn`. |
 | (prev) | Med | release profile | `panic = "abort"` → handler panic crashed the process; switched to `unwind` + `CatchPanicLayer`. |
 
 ## 3. Findings documented — remediation planned
@@ -57,11 +58,6 @@ tracked for follow-up.
   not an external attack surface; it must only run trusted SQL. **Planned**: build the
   `SessionContext` without the local-filesystem object store / disable the file table functions so
   even a forwarded query cannot read outside the configured S3 bucket.
-- **S-7 (Medium) — OTLP per-record size validation.** `max_string_len` / `max_json_depth` /
-  `max_properties_bytes` are applied to **events** but not to OTLP logs/traces/metrics, which are
-  bounded only by record *count* (`max_logs_records`) and the body size limit. A single record with
-  a multi-MB body or tens of thousands of attributes is stored verbatim. **Planned**: a per-record
-  size/attribute-count cap (drop oversized records, tolerant-loss) with a dedicated config knob.
 - **S-8 (Medium) — `max_logs_records` checked after flattening.** The count cap is enforced after
   the request is fully expanded into `Vec<Stored*>`, allowing transient memory amplification.
   **Planned**: short-circuit the flatten loop at the limit.
@@ -92,4 +88,4 @@ tracked for follow-up.
 
 ## 5. Recommended next steps
 - Run the cloud multi-agent review (`/code-review`) for an independent pass.
-- Land S-6 (reader sandbox) and S-7 (OTLP per-record limits) — the two highest-value remaining items.
+- Land S-6 (reader sandbox) — the highest-value remaining item.

@@ -13,6 +13,17 @@ pub const TENANT_KEYS: &[&str] = &["tenant_id", "tenant.id", "tenant"];
 pub const ACTOR_KEYS: &[&str] = &["actor_id", "actor.id", "user.id", "enduser.id", "user_id"];
 pub const SESSION_KEYS: &[&str] = &["session_id", "session.id", "session"];
 
+/// Longueur approximative (octets) d'une valeur JSON une fois sérialisée. Sert aux garde-fous de
+/// taille par enregistrement OTLP (S-7). Bornée par la taille de la requête (déjà plafonnée).
+pub fn json_byte_len(v: &Value) -> usize {
+    serde_json::to_string(v).map(|s| s.len()).unwrap_or(0)
+}
+
+/// Longueur d'une chaîne optionnelle (0 si absente).
+pub fn opt_len(s: &Option<String>) -> usize {
+    s.as_ref().map_or(0, |s| s.len())
+}
+
 /// Première clé candidate dont la valeur est une chaîne non vide.
 pub fn lookup(map: &Map<String, Value>, keys: &[&str]) -> Option<String> {
     for k in keys {

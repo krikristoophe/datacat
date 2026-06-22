@@ -82,6 +82,8 @@ pub struct IngestMetrics {
     pub inserted_total: AtomicU64,
     /// Enregistrements écartés car hors fenêtre de skew (perte tolérée).
     pub dropped_skew_total: AtomicU64,
+    /// Enregistrements OTLP écartés car au-delà de `max_otlp_record_bytes` (perte tolérée, S-7).
+    pub dropped_oversized_total: AtomicU64,
     /// Enregistrements perdus car la file était saturée (back-pressure, perte tolérée).
     pub dropped_channel_full_total: AtomicU64,
     /// Flushes en échec (batch perdu).
@@ -99,6 +101,7 @@ impl IngestMetrics {
             "inserted_total": inserted,
             "deduplicated_total": received.saturating_sub(inserted),
             "dropped_skew_total": self.dropped_skew_total.load(Ordering::Relaxed),
+            "dropped_oversized_total": self.dropped_oversized_total.load(Ordering::Relaxed),
             "dropped_channel_full_total": self.dropped_channel_full_total.load(Ordering::Relaxed),
             "flush_failures_total": self.flush_failures_total.load(Ordering::Relaxed),
             "flushes_total": self.flushes_total.load(Ordering::Relaxed),

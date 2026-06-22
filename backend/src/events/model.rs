@@ -200,6 +200,7 @@ mod tests {
             max_json_depth: 16,
             max_past_skew: Duration::from_secs(31 * 86_400),
             max_future_skew: Duration::from_secs(86_400),
+            max_otlp_record_bytes: 65_536,
         }
     }
 

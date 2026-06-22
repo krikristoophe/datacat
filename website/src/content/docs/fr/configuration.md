@@ -81,6 +81,28 @@ alg = "EdDSA"
 # ou : jwks_url = "https://issuer.example.com/.well-known/jwks.json"
 ```
 
+### Limites d'ingestion (`[ingest.limits]`)
+
+Tous les champs sont optionnels et utilisent des valeurs par défaut sûres.
+
+| Champ | Défaut | Rôle |
+|---|---|---|
+| `max_batch_events` | `500` | events par requête `/v1/events` |
+| `max_payload_bytes` | `1048576` | taille max du corps d'une requête events |
+| `max_properties_bytes` | `16384` | taille max du JSON `properties` d'un event |
+| `max_string_len` | `200` | longueur max d'un champ chaîne d'event |
+| `max_json_depth` | `16` | profondeur max d'imbrication des payloads d'events |
+| `max_past_skew` | `"31d"` | horodatage le plus ancien accepté |
+| `max_future_skew` | `"24h"` | avance maximale acceptée |
+| `max_otlp_record_bytes` | `65536` | plafond de taille **par enregistrement** OTLP (logs/spans/points) |
+
+`max_otlp_record_bytes` est un garde-fou en défense en profondeur : le corps de la requête est déjà
+borné, mais un seul enregistrement surdimensionné (un body de log énorme, un span avec des milliers
+d'events, un bloc d'attributs) est écarté individuellement plutôt que de laisser un enregistrement
+dominer un batch. Les enregistrements écartés sont comptés dans `dropped_oversized_total` (exposé sur
+`/stats`) et journalisés en `warn` — perte tolérée, jamais de doublon, jamais d'échec global de la
+requête.
+
 ## 4. Projets (`projects/*.toml`)
 
 Un **projet** regroupe des règles d'alerting et des canaux de notification, optionnellement

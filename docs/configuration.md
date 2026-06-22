@@ -75,6 +75,27 @@ alg = "EdDSA"
 # or: jwks_url = "https://issuer.example.com/.well-known/jwks.json"
 ```
 
+### Ingestion limits (`[ingest.limits]`)
+
+All fields are optional and default to safe values.
+
+| Field | Default | Purpose |
+|---|---|---|
+| `max_batch_events` | `500` | events per `/v1/events` request |
+| `max_payload_bytes` | `1048576` | max body size of an events request |
+| `max_properties_bytes` | `16384` | max size of an event's `properties` JSON |
+| `max_string_len` | `200` | max length of an event string field |
+| `max_json_depth` | `16` | max nesting depth of event payloads |
+| `max_past_skew` | `"31d"` | oldest accepted timestamp |
+| `max_future_skew` | `"24h"` | furthest-ahead accepted timestamp |
+| `max_otlp_record_bytes` | `65536` | **per-record** size cap for OTLP logs/spans/metric points |
+
+`max_otlp_record_bytes` is a defence-in-depth guard: the request body is already bounded by
+`max_logs_payload_bytes`, but a single oversized record (a huge log body, a span with thousands of
+events, an attribute blob) is dropped individually rather than letting one record dominate a batch.
+Dropped records are counted in `dropped_oversized_total` (exposed on `/stats`) and logged at
+`warn`. This is tolerated loss (§2) — never a duplicate, never a hard failure of the whole request.
+
 ## 4. Projects (`projects/*.toml`)
 
 A **project** groups alerting rules and notification channels, optionally scoped by a default

@@ -119,6 +119,26 @@ pub struct StoredSpan {
     pub links: Value,
 }
 
+impl StoredSpan {
+    /// Taille approximative (octets) du contenu variable du span. Garde-fou de taille par
+    /// enregistrement OTLP (S-7) : `events`/`links` peuvent être volumineux indépendamment du
+    /// nombre de spans dans la requête.
+    pub fn approx_content_bytes(&self) -> usize {
+        use crate::otlp::{json_byte_len, opt_len};
+        self.name.len()
+            + self.trace_id.len()
+            + self.span_id.len()
+            + opt_len(&self.parent_span_id)
+            + opt_len(&self.service_name)
+            + opt_len(&self.scope_name)
+            + opt_len(&self.status_message)
+            + json_byte_len(&self.resource_attributes)
+            + json_byte_len(&self.span_attributes)
+            + json_byte_len(&self.events)
+            + json_byte_len(&self.links)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct SpansParse {
     pub stored: Vec<StoredSpan>,
@@ -366,6 +386,7 @@ mod tests {
             max_json_depth: 16,
             max_past_skew: Duration::from_secs(31 * 86_400),
             max_future_skew: Duration::from_secs(86_400),
+            max_otlp_record_bytes: 65_536,
         }
     }
 

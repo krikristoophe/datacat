@@ -205,6 +205,65 @@ async fn logs_static_service_token(pool: PgPool) {
 }
 
 #[sqlx::test]
+async fn otlp_logs_over_record_size_limit_are_dropped(pool: PgPool) {
+    // S-7 : un seul enregistrement surdimensionné est écarté même si la requête entière
+    // reste sous `max_payload_bytes`. Un log normal dans la même requête passe quand même.
+    use std::sync::atomic::Ordering;
+
+    let app = start_app(
+        pool,
+        test_config(token_enabled_ed(), |c| {
+            c.limits.max_otlp_record_bytes = 512;
+        }),
+    )
+    .await;
+    let client = reqwest::Client::new();
+    let token = mint_ed("demo-backend", "svc-session", 600);
+    let now = Utc::now();
+
+    // Un body de 4 Kio dépasse la limite de 512 octets par enregistrement.
+    let huge = "x".repeat(4096);
+    let r = client
+        .post(format!("{}/v1/logs", app.base_url))
+        .bearer_auth(&token)
+        .json(&otlp_body("sess-huge", &huge, now))
+        .send()
+        .await
+        .unwrap();
+    // La requête est acceptée (200) ; l'enregistrement trop gros est silencieusement écarté.
+    assert_eq!(r.status(), 200);
+
+    // Un log normal passe.
+    let r = client
+        .post(format!("{}/v1/logs", app.base_url))
+        .bearer_auth(&token)
+        .json(&otlp_body("sess-ok", "small log", now))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(r.status(), 200);
+
+    assert_eq!(app.wait_logs(1, Duration::from_secs(5)).await, 1);
+    // Seul le petit log est persisté ; le gros n'apparaît jamais.
+    let big_persisted: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM logs WHERE session_id = 'sess-huge'")
+            .fetch_one(&app.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        big_persisted, 0,
+        "le log surdimensionné ne doit pas être stocké"
+    );
+    assert_eq!(
+        app.logs_metrics
+            .dropped_oversized_total
+            .load(Ordering::Relaxed),
+        1,
+        "le compteur dropped_oversized_total doit refléter l'écart"
+    );
+}
+
+#[sqlx::test]
 async fn otlp_grpc_logs_ingested(pool: PgPool) {
     use opentelemetry_proto::tonic::collector::logs::v1::logs_service_client::LogsServiceClient;
     use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;

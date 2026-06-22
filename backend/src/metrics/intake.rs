@@ -28,6 +28,27 @@ pub fn accept_metric_points(
         )));
     }
 
+    // Garde-fou de taille par enregistrement (S-7) : un point surdimensionné est écarté
+    // (perte tolérée §2) même si la requête entière reste sous `max_payload_bytes`.
+    let max_bytes = state.config.limits.max_otlp_record_bytes;
+    let before = parse.stored.len();
+    parse
+        .stored
+        .retain(|p| p.approx_content_bytes() <= max_bytes);
+    let dropped = (before - parse.stored.len()) as u64;
+    if dropped > 0 {
+        state
+            .metric_points
+            .metrics
+            .dropped_oversized_total
+            .fetch_add(dropped, Ordering::Relaxed);
+        tracing::warn!(
+            dropped,
+            max_bytes,
+            "points de métriques OTLP au-delà de la taille max écartés"
+        );
+    }
+
     let service_key = parse
         .stored
         .first()

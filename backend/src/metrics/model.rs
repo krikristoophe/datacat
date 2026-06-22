@@ -121,6 +121,21 @@ pub struct StoredMetricPoint {
     pub attributes: Value,
 }
 
+impl StoredMetricPoint {
+    /// Taille approximative (octets) du contenu variable du point. Garde-fou de taille par
+    /// enregistrement OTLP (S-7) : `buckets`/`attributes` peuvent être volumineux.
+    pub fn approx_content_bytes(&self) -> usize {
+        use crate::otlp::{json_byte_len, opt_len};
+        self.metric_name.len()
+            + opt_len(&self.unit)
+            + opt_len(&self.service_name)
+            + opt_len(&self.scope_name)
+            + self.buckets.as_ref().map_or(0, json_byte_len)
+            + json_byte_len(&self.resource_attributes)
+            + json_byte_len(&self.attributes)
+    }
+}
+
 /// Résultat d'un aplatissement OTLP de métriques.
 #[derive(Debug, Default)]
 pub struct MetricsParse {
@@ -416,6 +431,7 @@ mod tests {
             max_json_depth: 16,
             max_past_skew: Duration::from_secs(31 * 86_400),
             max_future_skew: Duration::from_secs(86_400),
+            max_otlp_record_bytes: 65_536,
         }
     }
 

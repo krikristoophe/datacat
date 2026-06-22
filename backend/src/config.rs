@@ -19,6 +19,10 @@ pub struct ValidationLimits {
     pub max_json_depth: usize,
     pub max_past_skew: Duration,
     pub max_future_skew: Duration,
+    /// Taille max (octets) du contenu variable d'un enregistrement OTLP (corps + chaînes +
+    /// attributs sérialisés). Un enregistrement plus gros est écarté (perte tolérée) plutôt que
+    /// de stocker un blob non borné. cf. revue de sécurité S-7.
+    pub max_otlp_record_bytes: usize,
 }
 
 /// Paramètres du rate limiting à deux niveaux + filet global (cf. cahier §7.2).
@@ -240,6 +244,7 @@ impl Config {
             max_json_depth: env_parse("MAX_JSON_DEPTH", 16)?,
             max_past_skew: env_duration("MAX_PAST_SKEW", Duration::from_secs(31 * 86_400))?,
             max_future_skew: env_duration("MAX_FUTURE_SKEW", Duration::from_secs(86_400))?,
+            max_otlp_record_bytes: env_parse("MAX_OTLP_RECORD_BYTES", 65_536)?,
         };
 
         let rate_limit = RateLimitConfig {

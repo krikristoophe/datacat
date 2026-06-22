@@ -104,6 +104,7 @@ pub fn test_config(token: TokenConfig, tweak: impl FnOnce(&mut Config)) -> Confi
             max_json_depth: 16,
             max_past_skew: Duration::from_secs(31 * 86_400),
             max_future_skew: Duration::from_secs(86_400),
+            max_otlp_record_bytes: 65_536,
         },
         rate_limit: RateLimitConfig {
             global_per_sec: 1_000_000.0,

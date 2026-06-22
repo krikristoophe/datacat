@@ -41,6 +41,27 @@ pub fn accept_logs(
         )));
     }
 
+    // Garde-fou de taille par enregistrement (S-7) : un seul log surdimensionné est écarté
+    // (perte tolérée §2) même si la requête entière reste sous `max_payload_bytes`.
+    let max_bytes = state.config.limits.max_otlp_record_bytes;
+    let before = parse.stored.len();
+    parse
+        .stored
+        .retain(|l| l.approx_content_bytes() <= max_bytes);
+    let dropped = (before - parse.stored.len()) as u64;
+    if dropped > 0 {
+        state
+            .logs
+            .metrics
+            .dropped_oversized_total
+            .fetch_add(dropped, Ordering::Relaxed);
+        tracing::warn!(
+            dropped,
+            max_bytes,
+            "logs OTLP au-delà de la taille max écartés"
+        );
+    }
+
     // Rate limiting : la clé fine est le `service.name` (source de confiance pour des logs
     // service-à-service), à défaut l'IP. Le plafond par IP limite alors le nombre de services
     // distincts par IP, et le filet global protège l'infrastructure.

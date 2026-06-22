@@ -82,6 +82,23 @@ pub struct StoredLog {
     pub log_attributes: Value,
 }
 
+impl StoredLog {
+    /// Taille approximative (octets) du contenu variable de l'enregistrement. Sert au garde-fou
+    /// de taille par enregistrement OTLP (S-7) : un seul log surdimensionné ne doit pas passer
+    /// même si la requête entière reste sous `max_payload_bytes`.
+    pub fn approx_content_bytes(&self) -> usize {
+        use crate::otlp::{json_byte_len, opt_len};
+        opt_len(&self.body)
+            + opt_len(&self.service_name)
+            + opt_len(&self.scope_name)
+            + opt_len(&self.severity_text)
+            + opt_len(&self.trace_id)
+            + opt_len(&self.span_id)
+            + json_byte_len(&self.resource_attributes)
+            + json_byte_len(&self.log_attributes)
+    }
+}
+
 /// Résultat d'un aplatissement OTLP.
 #[derive(Debug, Default)]
 pub struct LogsParse {
@@ -305,6 +322,7 @@ mod tests {
             max_json_depth: 16,
             max_past_skew: Duration::from_secs(31 * 86_400),
             max_future_skew: Duration::from_secs(86_400),
+            max_otlp_record_bytes: 65_536,
         }
     }
 

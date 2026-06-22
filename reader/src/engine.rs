@@ -9,12 +9,14 @@ use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::{
     ListingOptions, ListingTable, ListingTableConfig, ListingTableUrl,
 };
+use datafusion::execution::runtime_env::RuntimeEnvBuilder;
 use datafusion::prelude::*;
 use object_store::ObjectStore;
 use std::sync::Arc;
 use url::Url;
 
 use crate::config::{build_object_store, ColdConfig};
+use crate::sandbox::{ensure_read_only, S3OnlyObjectStoreRegistry};
 use crate::schema::schema_for_table;
 
 /// Moteur de lecture analytique sur le stockage froid.
@@ -32,10 +34,17 @@ impl ColdReader {
     /// Crée un nouveau `ColdReader` à partir de la configuration.
     pub async fn new(cfg: ColdConfig) -> anyhow::Result<Self> {
         let store = build_object_store(&cfg)?;
-        let ctx = SessionContext::new();
 
-        // Enregistre l'object store dans le contexte DataFusion
-        // sous le schéma URL s3://<bucket>/
+        // Sandbox S-6 : registre d'object stores qui n'autorise QUE le bucket S3 configuré.
+        // Le store local `file://` n'est jamais enregistré, donc DataFusion ne peut lire aucun
+        // fichier hôte (read_csv('/etc/passwd'), CREATE EXTERNAL TABLE … LOCATION, COPY … TO).
+        let runtime = RuntimeEnvBuilder::new()
+            .with_object_store_registry(Arc::new(S3OnlyObjectStoreRegistry::new()))
+            .build_arc()
+            .context("building sandboxed DataFusion runtime")?;
+        let ctx = SessionContext::new_with_config_rt(SessionConfig::default(), runtime);
+
+        // Enregistre l'object store du bucket configuré sous le schéma URL s3://<bucket>/.
         let s3_url = format!("s3://{}/", cfg.s3_bucket);
         let url = Url::parse(&s3_url).context("parsing S3 bucket URL")?;
         ctx.register_object_store(&url, Arc::clone(&store));
@@ -137,6 +146,9 @@ impl ColdReader {
             .sql(sql)
             .await
             .with_context(|| format!("parsing SQL: {sql}"))?;
+
+        // Sandbox S-6 : refuse tout plan qui n'est pas en lecture seule (DDL/DML/COPY).
+        ensure_read_only(df.logical_plan()).context("rejecting non-read-only SQL")?;
 
         let batches = df.collect().await.context("executing SQL query")?;
         Ok(batches)

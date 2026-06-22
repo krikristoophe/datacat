@@ -30,6 +30,7 @@
 pub mod config;
 pub mod engine;
 pub mod output;
+pub mod sandbox;
 pub mod schema;
 
 pub use config::ColdConfig;

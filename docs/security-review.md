@@ -42,6 +42,7 @@ remediation status.
 | S-3 | Medium | OTLP intake (logs/traces/metrics) | Rate limiter charged **1 token regardless of record count** (up to 2048), so a packed request bypassed the real write-rate ceiling. Cost is now the record count. |
 | S-4 | Medium | `grpc.rs` | No gRPC decode-size limit (HTTP had per-route body limits) — silently relied on tonic's 4 MB default. Now `max_decoding_message_size` is set from `max_logs_payload_bytes`. |
 | S-5 | Low | `api/routes.rs` | serde parse errors echoed a fragment of the (potentially PII) body back to the client. Now logged server-side only; client gets a generic 400. |
+| S-6 | High | `reader/src/engine.rs` + `reader/src/sandbox.rs` | Arbitrary SQL on a default DataFusion `SessionContext` exposed `read_csv` / `read_parquet` / `read_json` (and `CREATE EXTERNAL TABLE … LOCATION`, `COPY … TO`) over the local filesystem — `SELECT * FROM read_csv('/etc/passwd')` would exfiltrate host files. The reader now builds its `SessionContext` with a custom `S3OnlyObjectStoreRegistry` that registers **no** local `file://` store and resolves **only** the configured S3 bucket; all file access flows through the object-store registry, so local-file and other-bucket reads are denied at one point. A second layer (`ensure_read_only`) rejects any non-read plan (DDL/DML/`COPY`). |
 | S-7 | Medium | OTLP intake (logs/traces/metrics) | No **per-record** size cap on OTLP — a single multi-MB log body / span with tens of thousands of events was stored verbatim (bounded only by record count + total body size). Each record's variable content is now measured (`approx_content_bytes()`); records over `max_otlp_record_bytes` (default 64 KiB) are dropped (tolerant-loss), counted in `dropped_oversized_total`, and logged at `warn`. |
 | (prev) | Med | release profile | `panic = "abort"` → handler panic crashed the process; switched to `unwind` + `CatchPanicLayer`. |
 
@@ -50,14 +51,6 @@ remediation status.
 These are real but require larger / feature-sized changes or carry lower exploitability; they are
 tracked for follow-up.
 
-- **S-6 (High) — `reader/src/engine.rs`: arbitrary SQL → local-file read.** The cold `reader` runs
-  user-supplied SQL on a default DataFusion `SessionContext`, which exposes `read_csv` /
-  `read_parquet` / `read_json` table functions over the local filesystem — `SELECT * FROM
-  read_csv('/etc/passwd')` exfiltrates host files. **Mitigation today**: the reader is an
-  **operator-only CLI** with no network endpoint (it already requires shell + S3 creds), so it is
-  not an external attack surface; it must only run trusted SQL. **Planned**: build the
-  `SessionContext` without the local-filesystem object store / disable the file table functions so
-  even a forwarded query cannot read outside the configured S3 bucket.
 - **S-8 (Medium) — `max_logs_records` checked after flattening.** The count cap is enforced after
   the request is fully expanded into `Vec<Stored*>`, allowing transient memory amplification.
   **Planned**: short-circuit the flatten loop at the limit.
@@ -88,4 +81,4 @@ tracked for follow-up.
 
 ## 5. Recommended next steps
 - Run the cloud multi-agent review (`/code-review`) for an independent pass.
-- Land S-6 (reader sandbox) — the highest-value remaining item.
+- Work through the remaining lower-severity documented findings (S-8 to S-12) as follow-ups.

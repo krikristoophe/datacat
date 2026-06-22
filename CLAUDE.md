@@ -109,4 +109,4 @@ cd website && npm install && npm run build
 V1 = ingestion robuste + télémétrie OTLP (logs/traces/metrics) + couche de lecture (chaude PG /
 froide Parquet) + alerting + export froid + MCP. **Hors scope** pour l'instant : UI/dashboard,
 funnels, registre d'events, isolation complète des données entre projets (le multi-projet est
-au niveau config : alerting/notifs/filtre, ingestion partagée), RGPD applicatif.
+au niveau config : alerting/notifs/filtre, ingestion partagée).

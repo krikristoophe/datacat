@@ -2,10 +2,11 @@
 /**
  * Datacat marketing landing page.
  *
- * One self-contained component rendered by both `index.mdx` (English) and `fr/index.mdx`
- * (French). All visible strings live in the `STRINGS` dictionary so the two languages stay
- * structurally identical; pass `lang="en" | "fr"`. Styling is scoped to this component;
- * site-wide brand tokens live in `src/styles/theme.css`.
+ * A SALES page (not technical docs): hero, value proposition (data sovereignty / compliance),
+ * benefit grid, the four signals, and a CTA. One self-contained component rendered by both
+ * `index.mdx` (English) and `fr/index.mdx` (French); all visible strings live in `STRINGS` so the
+ * two languages stay structurally identical. Styling is scoped here; brand tokens live in
+ * `src/styles/theme.css`.
  */
 import { Code } from 'astro:components';
 
@@ -20,6 +21,7 @@ const rawBase = import.meta.env.BASE_URL;
 const base = rawBase.endsWith('/') ? rawBase : `${rawBase}/`;
 const link = (slug: string) => `${base}${lang === 'fr' ? 'fr/' : ''}${slug}`;
 
+// The only code on the page: a "look how little it takes" hero snippet (sells ease of adoption).
 const eventSnippet = `import { createDatacatClient } from "@datacat/sdk-web";
 
 const datacat = createDatacatClient({
@@ -30,94 +32,81 @@ const datacat = createDatacatClient({
 datacat.identify({ actorId: "user-123", tenantId: "clinic-7" });
 datacat.track("appointment_booked", { duration_ms: 412 });`;
 
-const otlpSnippet = `# Any OpenTelemetry exporter works — point it at Datacat.
-curl -X POST https://ingest.example.com/v1/logs \\
-  -H "Authorization: Bearer $SERVICE_TOKEN" \\
-  -H "Content-Type: application/json" \\
-  -d @logs.otlp.json
-# Logs, traces and metrics: OTLP over HTTP and gRPC.`;
-
-const querySnippet = `-- Hot reads hit PostgreSQL directly; cold reads scan Parquet on S3.
-SELECT event_name, count(*) AS n
-FROM   events
-WHERE  event_time > now() - interval '24 hours'
-GROUP  BY event_name
-ORDER  BY n DESC;`;
-
 const STRINGS = {
   en: {
     eyebrow: 'Self-hosted analytics & observability',
     titleLead: 'Own your analytics.',
     titleAccent: 'One Postgres, zero lock-in.',
     subtitle:
-      'Datacat is a self-hosted ingestion platform for events, logs, traces and metrics — strictly idempotent, OpenTelemetry-native, and built on PostgreSQL alone.',
+      "Self-host product events, logs, traces and metrics on PostgreSQL alone — and keep your users' data on your own infrastructure. Built to an HDS-grade security posture.",
     ctaPrimary: 'Get started',
     ctaSecondary: 'Quickstart',
     ctaGithub: 'View on GitHub',
     stack: 'Rust · PostgreSQL · OpenTelemetry · self-hosted',
     termTitle: 'track-event.ts',
     pillars: [
-      { k: 'Idempotent by design', v: 'Exactly-once, even across retries.' },
+      { k: 'Own your data', v: 'Self-hosted — nothing leaves your infra.' },
       { k: 'PostgreSQL only', v: 'No Kafka, ClickHouse or Zookeeper.' },
-      { k: 'OpenTelemetry native', v: 'OTLP over HTTP and gRPC.' },
-      { k: 'HDS-grade security', v: 'Asymmetric tokens, strict validation.' },
+      { k: 'All four signals', v: 'Events, logs, traces & metrics.' },
+      { k: 'HDS-grade security', v: 'For sensitive, regulated data.' },
     ],
-    signalsTitle: 'One pipeline, four signals',
-    signalsSub: 'Product events and full observability, correlated by tenant, actor and session.',
-    signals: [
-      { name: 'Events', desc: 'Product analytics with deterministic, idempotent IDs.' },
-      { name: 'Logs', desc: 'OTLP logs, flattened and correlated to traces.' },
-      { name: 'Traces', desc: 'Spans over HTTP & gRPC, linked by trace_id.' },
-      { name: 'Metrics', desc: 'Gauges, sums and histograms from OTLP.' },
+    valueTitle: 'Your data, your rules.',
+    valueSub:
+      'Most analytics and monitoring means shipping your users’ data to a third party. Datacat runs on your own infrastructure — so you stay in control.',
+    values: [
+      {
+        t: 'Nothing leaves your infrastructure',
+        d: 'No third-party SaaS, no data shipped offshore. You remain the data controller — built for sensitive, regulated workloads like health data (HDS) and GDPR.',
+      },
+      {
+        t: 'No lock-in, no per-event bill',
+        d: 'Open and self-hosted on your own PostgreSQL. Your schema, your retention, predictable cost — not a metered subscription that grows with your traffic.',
+      },
+      {
+        t: 'Product and ops, together',
+        d: 'Analytics events and full observability — logs, traces and metrics — in one correlated platform, instead of four disconnected tools and four invoices.',
+      },
     ],
-    featuresTitle: 'Built for the write path',
-    featuresSub: 'A robust, auditable ingestion core — light now, scalable later.',
+    featuresTitle: 'Everything you need, nothing to babysit.',
+    featuresSub: 'A focused platform that is simple to run and built to last.',
     features: [
       {
-        t: 'Ingestion-first',
-        d: 'COPY into UNLOGGED staging, micro-batching and time-partitioned tables. Tolerant to losing a tiny fraction of events — never to duplicates.',
+        t: 'Never count an event twice',
+        d: 'Strict idempotency means retries and flaky networks never inflate your numbers — each event lands exactly once.',
       },
       {
-        t: 'PostgreSQL only',
-        d: 'One database as the central store. Clean boundaries between ingestion, storage and reads keep it light now and scalable later.',
+        t: 'Runs on PostgreSQL alone',
+        d: 'No Kafka, ClickHouse or Zookeeper to operate. Deploy with a database you already know and trust.',
       },
       {
-        t: 'Strictly idempotent',
-        d: 'A given event_id (or log / span / metric identity) counts exactly once, enforced at the storage layer with ON CONFLICT DO NOTHING.',
+        t: 'Works with your stack',
+        d: 'OpenTelemetry-native: point any OTel SDK or Collector at Datacat over HTTP or gRPC. Web and Flutter SDKs included.',
       },
       {
-        t: 'OpenTelemetry native',
-        d: 'Ingest OTLP logs, traces and metrics over HTTP and gRPC, correlated with product events. A read layer and an embedded MCP server.',
+        t: 'Built for sensitive data',
+        d: 'Strict input validation, asymmetric token verification, TLS everywhere, and an auditable, HDS-grade security posture.',
       },
       {
-        t: 'Auditable & secure',
-        d: 'Strict input validation, a public endpoint defended server-side, asymmetric token verification (public key only), TLS, secrets in the environment.',
+        t: 'Alerting that fits your team',
+        d: 'Error rates, latency, heartbeats, spikes and anomalies — routed to Slack, e-mail or webhooks, per project.',
       },
       {
-        t: 'Configurable alerting',
-        d: 'Per-project rules: error rates, latency percentiles, heartbeats, spikes, composite conditions, new-error detection and anomalies — to Slack, e-mail or webhooks.',
+        t: 'Scales when you do',
+        d: 'High-throughput ingestion today, with scheduled cold export to Parquet on S3 for cheap, long-term storage.',
       },
     ],
-    pipelineTitle: 'How ingestion works',
-    pipelineSub: 'From SDK to durable, partitioned storage — and out to cold Parquet.',
-    pipeline: [
-      { t: 'SDK / OTLP', d: 'Web & Flutter SDKs, or any OpenTelemetry exporter.' },
-      { t: 'HTTP + gRPC API', d: 'Validated, authenticated, rate-limited intake.' },
-      { t: 'UNLOGGED staging', d: 'COPY a micro-batch for maximum write throughput.' },
-      { t: 'Idempotent merge', d: 'ON CONFLICT DO NOTHING — duplicates collapse.' },
-      { t: 'Partitioned tables', d: 'Time-partitioned PostgreSQL, ready to read hot.' },
-      { t: 'Cold export', d: 'Scheduled Parquet on S3 for cheap long-term scans.' },
+    signalsTitle: 'One platform, four signals.',
+    signalsSub:
+      'Product analytics and full observability — correlated by tenant, user and session, not scattered across four tools.',
+    signals: [
+      { name: 'Events', desc: 'Product analytics you fully own.' },
+      { name: 'Logs', desc: 'Application logs, correlated to traces.' },
+      { name: 'Traces', desc: 'Distributed traces across services.' },
+      { name: 'Metrics', desc: 'Latency, throughput and custom metrics.' },
     ],
-    codeTitle: 'Send anything. Read it anywhere.',
-    codeSub: 'A few lines to start ingesting; SQL or MCP to read it back.',
-    codeTabs: [
-      { label: 'Track an event', code: eventSnippet, lang: 'ts' },
-      { label: 'Ship OTLP logs', code: otlpSnippet, lang: 'bash' },
-      { label: 'Query', code: querySnippet, lang: 'sql' },
-    ],
-    finalTitle: 'Start ingesting in minutes',
-    finalSub: 'Spin up PostgreSQL, point an SDK or OTLP exporter at Datacat, and own your data end to end.',
-    finalPrimary: 'Read the quickstart',
+    finalTitle: 'Own your analytics today.',
+    finalSub: "Self-host Datacat on PostgreSQL and keep full control of your users' data.",
+    finalPrimary: 'Get started',
     finalGithub: 'Star on GitHub',
   },
   fr: {
@@ -125,80 +114,80 @@ const STRINGS = {
     titleLead: 'Vos analytics, chez vous.',
     titleAccent: 'Un seul Postgres, zéro lock-in.',
     subtitle:
-      "Datacat est une plateforme d'ingestion auto-hébergée pour events, logs, traces et métriques — strictement idempotente, native OpenTelemetry, et bâtie sur PostgreSQL seul.",
+      "Auto-hébergez events produit, logs, traces et métriques sur PostgreSQL seul — et gardez les données de vos utilisateurs sur votre propre infrastructure. Conçu pour une posture de sécurité niveau HDS.",
     ctaPrimary: 'Commencer',
     ctaSecondary: 'Démarrage rapide',
     ctaGithub: 'Voir sur GitHub',
     stack: 'Rust · PostgreSQL · OpenTelemetry · auto-hébergé',
     termTitle: 'track-event.ts',
     pillars: [
-      { k: 'Idempotent par conception', v: 'Exactly-once, même après retries.' },
+      { k: 'Vos données vous appartiennent', v: 'Auto-hébergé — rien ne sort de chez vous.' },
       { k: 'PostgreSQL uniquement', v: 'Ni Kafka, ni ClickHouse, ni Zookeeper.' },
-      { k: 'Natif OpenTelemetry', v: 'OTLP en HTTP et gRPC.' },
-      { k: 'Sécurité niveau HDS', v: 'Tokens asymétriques, validation stricte.' },
+      { k: 'Les quatre signaux', v: 'Events, logs, traces & métriques.' },
+      { k: 'Sécurité niveau HDS', v: 'Pour des données sensibles et régulées.' },
     ],
-    signalsTitle: 'Un pipeline, quatre signaux',
-    signalsSub: 'Events produit et observabilité complète, corrélés par tenant, acteur et session.',
-    signals: [
-      { name: 'Events', desc: 'Analytics produit avec des IDs déterministes et idempotents.' },
-      { name: 'Logs', desc: 'Logs OTLP aplatis et corrélés aux traces.' },
-      { name: 'Traces', desc: 'Spans en HTTP & gRPC, reliés par trace_id.' },
-      { name: 'Métriques', desc: 'Gauges, sums et histogrammes depuis OTLP.' },
+    valueTitle: 'Vos données, vos règles.',
+    valueSub:
+      "La plupart des outils d'analytics et de monitoring envoient les données de vos utilisateurs à un tiers. Datacat tourne sur votre propre infrastructure — vous gardez le contrôle.",
+    values: [
+      {
+        t: 'Rien ne sort de votre infrastructure',
+        d: "Aucun SaaS tiers, aucune donnée envoyée à l'étranger. Vous restez responsable de traitement — conçu pour des charges sensibles et régulées : données de santé (HDS), RGPD.",
+      },
+      {
+        t: 'Zéro lock-in, pas de facture à l’event',
+        d: "Ouvert et auto-hébergé sur votre PostgreSQL. Votre schéma, votre rétention, un coût prévisible — pas un abonnement à l'usage qui gonfle avec votre trafic.",
+      },
+      {
+        t: 'Produit et ops, ensemble',
+        d: "Events analytics et observabilité complète — logs, traces et métriques — dans une plateforme corrélée, au lieu de quatre outils déconnectés et quatre factures.",
+      },
     ],
-    featuresTitle: "Conçu pour le chemin d'écriture",
-    featuresSub: "Un cœur d'ingestion robuste et auditable — léger maintenant, scalable plus tard.",
+    featuresTitle: "Tout ce qu'il faut, rien à surveiller.",
+    featuresSub: 'Une plateforme ciblée, simple à exploiter et faite pour durer.',
     features: [
       {
-        t: 'Centré ingestion',
-        d: "COPY vers une table de staging UNLOGGED, micro-batch et tables partitionnées par le temps. Tolérant à la perte d'une infime fraction d'events — jamais aux doublons.",
+        t: 'Jamais un event compté deux fois',
+        d: "L'idempotence stricte fait que retries et réseaux instables ne gonflent jamais vos chiffres — chaque event ne compte qu'une fois.",
       },
       {
-        t: 'PostgreSQL uniquement',
-        d: 'Une seule base comme stockage central. Des frontières nettes entre ingestion, stockage et lecture : léger maintenant, scalable plus tard.',
+        t: 'Tourne sur PostgreSQL seul',
+        d: 'Ni Kafka, ni ClickHouse, ni Zookeeper à exploiter. Déployez avec une base que vous connaissez déjà.',
       },
       {
-        t: 'Strictement idempotent',
-        d: "Un event_id donné (ou l'identité d'un log / span / point de métrique) ne compte qu'une fois, garanti au stockage via ON CONFLICT DO NOTHING.",
+        t: 'Compatible avec votre stack',
+        d: 'Natif OpenTelemetry : pointez n’importe quel SDK ou Collector OTel vers Datacat, en HTTP ou gRPC. SDKs Web et Flutter inclus.',
       },
       {
-        t: 'Natif OpenTelemetry',
-        d: "Ingestion OTLP des logs, traces et métriques en HTTP et gRPC, corrélés aux events produit. Une couche de lecture et un serveur MCP embarqué.",
+        t: 'Conçu pour les données sensibles',
+        d: 'Validation stricte des entrées, vérification asymétrique du token, TLS partout, et une posture de sécurité auditable niveau HDS.',
       },
       {
-        t: 'Auditable & sécurisé',
-        d: "Validation stricte, endpoint public défendu côté serveur, vérification asymétrique du token (clé publique seule), TLS, secrets dans l'environnement.",
+        t: 'Un alerting adapté à votre équipe',
+        d: "Taux d'erreur, latence, heartbeats, pics et anomalies — routés vers Slack, e-mail ou webhooks, par projet.",
       },
       {
-        t: 'Alerting configurable',
-        d: "Règles par projet : taux d'erreur, percentiles, heartbeats, pics, conditions composites, détection de nouvelles erreurs et anomalies — vers Slack, e-mail ou webhooks.",
+        t: 'Scalable quand vous grandissez',
+        d: 'Ingestion à haut débit aujourd’hui, avec export froid planifié vers Parquet sur S3 pour un stockage long terme économique.',
       },
     ],
-    pipelineTitle: "Comment fonctionne l'ingestion",
-    pipelineSub: "Du SDK au stockage partitionné durable — et jusqu'au Parquet froid.",
-    pipeline: [
-      { t: 'SDK / OTLP', d: 'SDKs Web & Flutter, ou tout exporteur OpenTelemetry.' },
-      { t: 'API HTTP + gRPC', d: 'Admission validée, authentifiée, limitée en débit.' },
-      { t: 'Staging UNLOGGED', d: 'COPY d’un micro-batch pour un débit d’écriture maximal.' },
-      { t: 'Merge idempotent', d: 'ON CONFLICT DO NOTHING — les doublons fusionnent.' },
-      { t: 'Tables partitionnées', d: 'PostgreSQL partitionné par le temps, lisible à chaud.' },
-      { t: 'Export froid', d: 'Parquet planifié sur S3 pour des scans long terme.' },
+    signalsTitle: 'Une plateforme, quatre signaux.',
+    signalsSub:
+      'Analytics produit et observabilité complète — corrélés par tenant, utilisateur et session, au lieu d’être éparpillés sur quatre outils.',
+    signals: [
+      { name: 'Events', desc: 'Des analytics produit qui vous appartiennent.' },
+      { name: 'Logs', desc: 'Logs applicatifs, corrélés aux traces.' },
+      { name: 'Traces', desc: 'Traces distribuées entre services.' },
+      { name: 'Métriques', desc: 'Latence, débit et métriques métier.' },
     ],
-    codeTitle: 'Envoyez tout. Lisez partout.',
-    codeSub: 'Quelques lignes pour ingérer ; SQL ou MCP pour relire.',
-    codeTabs: [
-      { label: 'Tracer un event', code: eventSnippet, lang: 'ts' },
-      { label: 'Envoyer des logs OTLP', code: otlpSnippet, lang: 'bash' },
-      { label: 'Requêter', code: querySnippet, lang: 'sql' },
-    ],
-    finalTitle: 'Ingérez en quelques minutes',
-    finalSub: 'Lancez PostgreSQL, pointez un SDK ou un exporteur OTLP vers Datacat, et maîtrisez vos données de bout en bout.',
-    finalPrimary: 'Lire le démarrage rapide',
+    finalTitle: 'Reprenez le contrôle de vos analytics.',
+    finalSub: 'Auto-hébergez Datacat sur PostgreSQL et gardez la maîtrise totale des données de vos utilisateurs.',
+    finalPrimary: 'Commencer',
     finalGithub: 'Star sur GitHub',
   },
 }[lang];
 
 const GH = 'https://github.com/krikristoophe/datacat';
-const tabId = `dc-tabs-${lang}`;
 ---
 
 <div class="dc">
@@ -222,7 +211,7 @@ const tabId = `dc-tabs-${lang}`;
         <p class="dc-stack">{STRINGS.stack}</p>
       </div>
 
-      <div class="dc-term" aria-hidden="false">
+      <div class="dc-term">
         <div class="dc-term__bar">
           <span class="dc-dot dc-dot--r"></span>
           <span class="dc-dot dc-dot--y"></span>
@@ -245,6 +234,38 @@ const tabId = `dc-tabs-${lang}`;
     </ul>
   </section>
 
+  {/* ───────────── Value proposition (data sovereignty) ───────────── */}
+  <section class="dc-section dc-section--alt">
+    <header class="dc-head">
+      <h2>{STRINGS.valueTitle}</h2>
+      <p>{STRINGS.valueSub}</p>
+    </header>
+    <div class="dc-features dc-features--three">
+      {STRINGS.values.map((v) => (
+        <article class="dc-card dc-card--plain">
+          <h3>{v.t}</h3>
+          <p>{v.d}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
+  {/* ─────────────────────── Benefits ────────────────────── */}
+  <section class="dc-section">
+    <header class="dc-head">
+      <h2>{STRINGS.featuresTitle}</h2>
+      <p>{STRINGS.featuresSub}</p>
+    </header>
+    <div class="dc-features">
+      {STRINGS.features.map((f) => (
+        <article class="dc-card dc-card--plain">
+          <h3>{f.t}</h3>
+          <p>{f.d}</p>
+        </article>
+      ))}
+    </div>
+  </section>
+
   {/* ─────────────────────── Signals ─────────────────────── */}
   <section class="dc-section">
     <header class="dc-head">
@@ -261,102 +282,18 @@ const tabId = `dc-tabs-${lang}`;
     </div>
   </section>
 
-  {/* ─────────────────────── Features ────────────────────── */}
-  <section class="dc-section">
-    <header class="dc-head">
-      <h2>{STRINGS.featuresTitle}</h2>
-      <p>{STRINGS.featuresSub}</p>
-    </header>
-    <div class="dc-features">
-      {STRINGS.features.map((f, i) => (
-        <article class="dc-card">
-          <span class="dc-card__chip">{String(i + 1).padStart(2, '0')}</span>
-          <h3>{f.t}</h3>
-          <p>{f.d}</p>
-        </article>
-      ))}
-    </div>
-  </section>
-
-  {/* ─────────────────────── Pipeline ────────────────────── */}
-  <section class="dc-section dc-section--alt">
-    <header class="dc-head">
-      <h2>{STRINGS.pipelineTitle}</h2>
-      <p>{STRINGS.pipelineSub}</p>
-    </header>
-    <ol class="dc-flow">
-      {STRINGS.pipeline.map((step, i) => (
-        <li class="dc-step">
-          <span class="dc-step__num">{i + 1}</span>
-          <h3>{step.t}</h3>
-          <p>{step.d}</p>
-        </li>
-      ))}
-    </ol>
-  </section>
-
-  {/* ─────────────────────── Code showcase ───────────────── */}
-  <section class="dc-section">
-    <header class="dc-head">
-      <h2>{STRINGS.codeTitle}</h2>
-      <p>{STRINGS.codeSub}</p>
-    </header>
-    <div class="dc-code" id={tabId}>
-      <div class="dc-code__tabs" role="tablist">
-        {STRINGS.codeTabs.map((tab, i) => (
-          <button
-            class={`dc-code__tab${i === 0 ? ' is-active' : ''}`}
-            data-i={i}
-            role="tab"
-            aria-selected={i === 0 ? 'true' : 'false'}
-            type="button"
-          >
-            {tab.label}
-          </button>
-        ))}
-      </div>
-      <div class="dc-code__panels">
-        {STRINGS.codeTabs.map((tab, i) => (
-          <div class={`dc-code__panel${i === 0 ? ' is-active' : ''}`} data-i={i} role="tabpanel">
-            <Code code={tab.code} lang={tab.lang as any} theme="github-dark-default" />
-          </div>
-        ))}
-      </div>
-    </div>
-  </section>
-
   {/* ─────────────────────── Final CTA ───────────────────── */}
   <section class="dc-cta">
     <div class="dc-cta__inner">
       <h2>{STRINGS.finalTitle}</h2>
       <p>{STRINGS.finalSub}</p>
       <div class="dc-actions dc-actions--center">
-        <a class="dc-btn dc-btn--primary" href={link('quickstart/')}>{STRINGS.finalPrimary} →</a>
+        <a class="dc-btn dc-btn--primary" href={link('start/')}>{STRINGS.finalPrimary} →</a>
         <a class="dc-btn dc-btn--ghost" href={GH} target="_blank" rel="noopener">{STRINGS.finalGithub} ★</a>
       </div>
     </div>
   </section>
 </div>
-
-<script is:inline define:vars={{ tabId }}>
-  (() => {
-    const root = document.getElementById(tabId);
-    if (!root) return;
-    const tabs = root.querySelectorAll('.dc-code__tab');
-    const panels = root.querySelectorAll('.dc-code__panel');
-    tabs.forEach((tab) => {
-      tab.addEventListener('click', () => {
-        const i = tab.getAttribute('data-i');
-        tabs.forEach((t) => {
-          const active = t === tab;
-          t.classList.toggle('is-active', active);
-          t.setAttribute('aria-selected', active ? 'true' : 'false');
-        });
-        panels.forEach((p) => p.classList.toggle('is-active', p.getAttribute('data-i') === i));
-      });
-    });
-  })();
-</script>
 
 <style>
   /* The landing breaks out of Starlight's narrow splash column. */
@@ -437,7 +374,7 @@ const tabId = `dc-tabs-${lang}`;
     font-size: clamp(1.02rem, 1.6vw, 1.22rem);
     line-height: 1.6;
     margin: 1.1rem 0 0;
-    max-width: 38ch;
+    max-width: 42ch;
   }
   .dc-actions {
     display: flex;
@@ -566,7 +503,7 @@ const tabId = `dc-tabs-${lang}`;
   }
   .dc-head {
     text-align: center;
-    max-width: 52ch;
+    max-width: 56ch;
     margin: 0 auto clamp(1.6rem, 4vw, 2.6rem);
   }
   .dc-head h2 {
@@ -614,7 +551,7 @@ const tabId = `dc-tabs-${lang}`;
     line-height: 1.5;
   }
 
-  /* Features */
+  /* Benefit / value cards */
   .dc-features {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
@@ -646,16 +583,8 @@ const tabId = `dc-tabs-${lang}`;
   .dc-card:hover::before {
     opacity: 1;
   }
-  .dc-card__chip {
-    font-family: var(--sl-font-mono, monospace);
-    font-size: 0.78rem;
-    color: var(--sl-color-text-accent);
-    border: 1px solid var(--dc-edge);
-    border-radius: 7px;
-    padding: 0.15rem 0.45rem;
-  }
   .dc-card h3 {
-    margin: 0.85rem 0 0;
+    margin: 0;
     font-size: 1.15rem;
   }
   .dc-card p {
@@ -663,108 +592,6 @@ const tabId = `dc-tabs-${lang}`;
     color: var(--sl-color-gray-2);
     font-size: 0.92rem;
     line-height: 1.58;
-  }
-
-  /* Pipeline flow */
-  .dc-flow {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: grid;
-    grid-template-columns: repeat(6, 1fr);
-    gap: 0.7rem;
-  }
-  .dc-step {
-    position: relative;
-    border: 1px solid var(--dc-edge);
-    border-radius: 14px;
-    padding: 1.1rem 0.9rem;
-    background: var(--sl-color-bg);
-  }
-  .dc-step:not(:last-child)::after {
-    content: '→';
-    position: absolute;
-    right: -0.62rem;
-    top: 50%;
-    transform: translateY(-50%);
-    color: var(--dc-violet);
-    font-weight: 700;
-    z-index: 2;
-  }
-  .dc-step__num {
-    display: inline-grid;
-    place-items: center;
-    width: 1.7rem;
-    height: 1.7rem;
-    border-radius: 8px;
-    background: var(--dc-gradient);
-    color: #0b0a12;
-    font-weight: 700;
-    font-size: 0.9rem;
-  }
-  .dc-step h3 {
-    margin: 0.7rem 0 0;
-    font-size: 0.98rem;
-  }
-  .dc-step p {
-    margin: 0.35rem 0 0;
-    font-size: 0.82rem;
-    color: var(--sl-color-gray-3);
-    line-height: 1.45;
-  }
-
-  /* Code showcase */
-  .dc-code {
-    border: 1px solid rgba(255, 255, 255, 0.12);
-    border-radius: 16px;
-    overflow: hidden;
-    background: #0d1117; /* always a dark IDE surface */
-    box-shadow: 0 30px 60px -34px rgba(0, 0, 0, 0.7);
-    max-width: 820px;
-    margin-inline: auto;
-  }
-  .dc-code__tabs {
-    display: flex;
-    gap: 0.25rem;
-    padding: 0.5rem 0.5rem 0;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    flex-wrap: wrap;
-  }
-  .dc-code__tab {
-    appearance: none;
-    background: transparent;
-    border: none;
-    color: #8b94a7;
-    font: inherit;
-    font-size: 0.9rem;
-    font-weight: 600;
-    padding: 0.6rem 0.9rem;
-    border-radius: 8px 8px 0 0;
-    cursor: pointer;
-    border-bottom: 2px solid transparent;
-    transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
-  }
-  .dc-code__tab:hover {
-    color: #fff;
-  }
-  .dc-code__tab.is-active {
-    color: #fff;
-    border-bottom-color: var(--dc-violet);
-    background: rgba(255, 255, 255, 0.05);
-  }
-  .dc-code__panel {
-    display: none;
-  }
-  .dc-code__panel.is-active {
-    display: block;
-  }
-  .dc-code__panel :global(pre) {
-    margin: 0;
-    border-radius: 0;
-    border: none;
-    background: transparent !important;
-    padding: 1.1rem 1.2rem;
-    font-size: 0.86rem;
   }
 
   /* Final CTA */
@@ -805,11 +632,9 @@ const tabId = `dc-tabs-${lang}`;
     .dc-pillars { grid-template-columns: repeat(2, 1fr); }
     .dc-signals { grid-template-columns: repeat(2, 1fr); }
     .dc-features { grid-template-columns: repeat(2, 1fr); }
-    .dc-flow { grid-template-columns: repeat(2, 1fr); }
-    .dc-step:not(:last-child)::after { display: none; }
   }
   @media (max-width: 540px) {
-    .dc-pillars, .dc-signals, .dc-features, .dc-flow { grid-template-columns: 1fr; }
+    .dc-pillars, .dc-signals, .dc-features { grid-template-columns: 1fr; }
   }
   @media (prefers-reduced-motion: reduce) {
     .dc-btn, .dc-card, .dc-signal { transition: none; }

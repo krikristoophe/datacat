@@ -47,6 +47,7 @@ pub async fn export_events(
     _bucket: &str,
     prefix: Option<&str>,
 ) -> anyhow::Result<usize> {
+    validate_prefix(prefix)?;
     let day_start = Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap());
     let day_end = Utc.from_utc_datetime(
         &(date + chrono::Duration::days(1))
@@ -222,6 +223,7 @@ pub async fn export_logs(
     _bucket: &str,
     prefix: Option<&str>,
 ) -> anyhow::Result<usize> {
+    validate_prefix(prefix)?;
     let day_start = Utc.from_utc_datetime(&date.and_hms_opt(0, 0, 0).unwrap());
     let day_end = Utc.from_utc_datetime(
         &(date + chrono::Duration::days(1))
@@ -436,6 +438,28 @@ fn logs_to_record_batch(
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// Validate an operator-supplied S3 key prefix (S-12). Even though S3 keys are flat strings,
+/// a prefix with `..` segments, a leading `/`, backslashes or control characters can produce
+/// surprising keys on filesystem-backed object stores (MinIO on local disk) — reject them so a
+/// misconfiguration fails closed instead of writing outside the intended layout.
+fn validate_prefix(prefix: Option<&str>) -> anyhow::Result<()> {
+    let Some(p) = prefix.filter(|p| !p.is_empty()) else {
+        return Ok(());
+    };
+    if p.starts_with('/') || p.contains('\\') {
+        anyhow::bail!(
+            "invalid export prefix {p:?}: must be a relative S3 key (no leading '/' or '\\')"
+        );
+    }
+    if p.split('/').any(|seg| seg == "..") {
+        anyhow::bail!("invalid export prefix {p:?}: must not contain '..' path segments");
+    }
+    if p.chars().any(|c| c.is_control()) {
+        anyhow::bail!("invalid export prefix {p:?}: must not contain control characters");
+    }
+    Ok(())
+}
+
 /// Build the Hive-partition-style S3 key.
 ///
 /// Format: `[prefix/]<table>/date=YYYY-MM-DD/part-<n>.parquet`
@@ -463,3 +487,39 @@ fn writer_properties() -> WriterProperties {
 // Suppress "never used" warning for TimeUnit import used in schema module
 #[allow(dead_code)]
 fn _use_time_unit(_: TimeUnit) {}
+
+#[cfg(test)]
+mod tests {
+    use super::{hive_path, validate_prefix};
+    use chrono::NaiveDate;
+
+    #[test]
+    fn valid_prefixes_accepted() {
+        assert!(validate_prefix(None).is_ok());
+        assert!(validate_prefix(Some("")).is_ok());
+        assert!(validate_prefix(Some("cold")).is_ok());
+        assert!(validate_prefix(Some("tenant-a/cold")).is_ok());
+    }
+
+    #[test]
+    fn traversal_and_absolute_prefixes_rejected() {
+        assert!(validate_prefix(Some("../escape")).is_err());
+        assert!(validate_prefix(Some("a/../../b")).is_err());
+        assert!(validate_prefix(Some("/absolute")).is_err());
+        assert!(validate_prefix(Some("a\\b")).is_err());
+        assert!(validate_prefix(Some("a\nb")).is_err());
+    }
+
+    #[test]
+    fn hive_path_layout() {
+        let date = NaiveDate::from_ymd_opt(2026, 6, 15).unwrap();
+        assert_eq!(
+            hive_path(None, "events", date, 0),
+            "events/date=2026-06-15/part-0000.parquet"
+        );
+        assert_eq!(
+            hive_path(Some("cold"), "logs", date, 1),
+            "cold/logs/date=2026-06-15/part-0001.parquet"
+        );
+    }
+}

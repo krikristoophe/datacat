@@ -47,7 +47,12 @@ impl MetricsService for DatacatMetricsService {
         authorize_metrics(&self.state, ip, now, token.as_deref()).map_err(app_err_to_status)?;
 
         let req = request.into_inner();
-        let parse = proto_to_metrics(req, Utc::now(), &self.state.limits);
+        let parse = proto_to_metrics(
+            req,
+            Utc::now(),
+            &self.state.limits,
+            self.state.config.max_logs_records,
+        );
         let (total, enqueued) =
             accept_metric_points(&self.state, ip, now, parse).map_err(app_err_to_status)?;
         let rejected = (total - enqueued) as i64;
@@ -66,12 +71,13 @@ fn proto_to_metrics(
     req: ExportMetricsServiceRequest,
     received_at: DateTime<Utc>,
     limits: &ValidationLimits,
+    max_records: usize,
 ) -> MetricsParse {
     let past = received_at - chrono::Duration::from_std(limits.max_past_skew).unwrap();
     let future = received_at + chrono::Duration::from_std(limits.max_future_skew).unwrap();
 
     let mut out = MetricsParse::default();
-    for rm in req.resource_metrics {
+    'records: for rm in req.resource_metrics {
         let resource_attrs = rm
             .resource
             .map(|r| attrs_to_map(&r.attributes))
@@ -92,6 +98,10 @@ fn proto_to_metrics(
                 match m.data {
                     Some(Data::Gauge(g)) => {
                         for p in g.data_points {
+                            // Garde-fou mémoire (S-8) : borne le Vec à `max_records + 1`.
+                            if out.stored.len() > max_records {
+                                break 'records;
+                            }
                             push_number(
                                 &mut out,
                                 received_at,
@@ -109,6 +119,10 @@ fn proto_to_metrics(
                     }
                     Some(Data::Sum(s)) => {
                         for p in s.data_points {
+                            // Garde-fou mémoire (S-8) : borne le Vec à `max_records + 1`.
+                            if out.stored.len() > max_records {
+                                break 'records;
+                            }
                             push_number(
                                 &mut out,
                                 received_at,
@@ -126,6 +140,10 @@ fn proto_to_metrics(
                     }
                     Some(Data::Histogram(h)) => {
                         for p in h.data_points {
+                            // Garde-fou mémoire (S-8) : borne le Vec à `max_records + 1`.
+                            if out.stored.len() > max_records {
+                                break 'records;
+                            }
                             let time = nz(p.time_unix_nano).unwrap_or(received_at);
                             if time < past || time > future {
                                 out.dropped_skew += 1;

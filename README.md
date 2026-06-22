@@ -72,7 +72,9 @@ cargo run            # listens on :8080 by default
 Application integration: [`docs/integration.md`](docs/integration.md) ·
 Deployment: [`docs/deployment.md`](docs/deployment.md) ·
 Token contract: [`docs/token-contract.md`](docs/token-contract.md) ·
-Security posture: [`docs/security.md`](docs/security.md).
+Security posture: [`docs/security.md`](docs/security.md) ·
+Security review: [`docs/security-review.md`](docs/security-review.md) ·
+Changelog: [`CHANGELOG.md`](CHANGELOG.md).
 
 ## Development
 

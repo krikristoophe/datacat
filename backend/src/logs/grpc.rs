@@ -46,7 +46,12 @@ impl LogsService for DatacatLogsService {
         authorize_logs(&self.state, ip, now, token.as_deref()).map_err(app_err_to_status)?;
 
         let req = request.into_inner();
-        let parse = proto_to_logs(req, Utc::now(), &self.state.limits);
+        let parse = proto_to_logs(
+            req,
+            Utc::now(),
+            &self.state.limits,
+            self.state.config.max_logs_records,
+        );
         let (total, enqueued) =
             accept_logs(&self.state, ip, now, parse).map_err(app_err_to_status)?;
         let rejected = (total - enqueued) as i64;
@@ -65,12 +70,13 @@ fn proto_to_logs(
     req: ExportLogsServiceRequest,
     received_at: DateTime<Utc>,
     limits: &ValidationLimits,
+    max_records: usize,
 ) -> LogsParse {
     let past = received_at - chrono::Duration::from_std(limits.max_past_skew).unwrap();
     let future = received_at + chrono::Duration::from_std(limits.max_future_skew).unwrap();
 
     let mut out = LogsParse::default();
-    for rl in req.resource_logs {
+    'records: for rl in req.resource_logs {
         let resource_attrs = rl
             .resource
             .map(|r| attrs_to_map(&r.attributes))
@@ -83,6 +89,10 @@ fn proto_to_logs(
         for sl in rl.scope_logs {
             let scope_name = sl.scope.map(|s| s.name).filter(|s| !s.is_empty());
             for r in sl.log_records {
+                // Garde-fou mémoire (S-8) : borne le Vec à `max_records + 1`.
+                if out.stored.len() > max_records {
+                    break 'records;
+                }
                 let log_time = nz(r.time_unix_nano)
                     .or_else(|| nz(r.observed_time_unix_nano))
                     .unwrap_or(received_at);

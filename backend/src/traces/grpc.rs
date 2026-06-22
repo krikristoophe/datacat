@@ -46,7 +46,12 @@ impl TraceService for DatacatTracesService {
         authorize_traces(&self.state, ip, now, token.as_deref()).map_err(app_err_to_status)?;
 
         let req = request.into_inner();
-        let parse = proto_to_spans(req, Utc::now(), &self.state.limits);
+        let parse = proto_to_spans(
+            req,
+            Utc::now(),
+            &self.state.limits,
+            self.state.config.max_logs_records,
+        );
         let (total, enqueued) =
             accept_spans(&self.state, ip, now, parse).map_err(app_err_to_status)?;
         let rejected = (total - enqueued) as i64;
@@ -64,12 +69,13 @@ fn proto_to_spans(
     req: ExportTraceServiceRequest,
     received_at: DateTime<Utc>,
     limits: &ValidationLimits,
+    max_records: usize,
 ) -> SpansParse {
     let past = received_at - chrono::Duration::from_std(limits.max_past_skew).unwrap();
     let future = received_at + chrono::Duration::from_std(limits.max_future_skew).unwrap();
 
     let mut out = SpansParse::default();
-    for rs in req.resource_spans {
+    'records: for rs in req.resource_spans {
         let resource_attrs = rs
             .resource
             .map(|r| attrs_to_map(&r.attributes))
@@ -82,6 +88,10 @@ fn proto_to_spans(
         for ss in rs.scope_spans {
             let scope_name = ss.scope.map(|s| s.name).filter(|s| !s.is_empty());
             for s in ss.spans {
+                // Garde-fou mémoire (S-8) : borne le Vec à `max_records + 1`.
+                if out.stored.len() > max_records {
+                    break 'records;
+                }
                 let (Some(trace_id), Some(span_id)) = (hex_opt(&s.trace_id), hex_opt(&s.span_id))
                 else {
                     out.dropped_invalid += 1;

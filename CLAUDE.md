@@ -93,8 +93,15 @@ cd website && npm install && npm run build
    projet sera en production.
 3. **Revue de sécurité** : par défaut, la revue de sécurité porte sur **TOUT le code** (niveau
    HDS), pas seulement le diff — sauf demande explicite de la limiter. Documenter dans
-   `docs/security-review.md` et corriger les findings.
-4. **Vérifs vertes** avant de pousser : `cargo fmt --check`, `cargo clippy --all-targets
+   `docs/security-review.md`. **Aucun finding « planifié » / « à faire plus tard » :** tout
+   problème trouvé doit être **corrigé dans la foulée** (niveau HDS). `docs/security-review.md` ne
+   contient donc que des contrôles vérifiés et des notes « pas un risque / par conception » —
+   **jamais** de section « accepted risks » ni « next steps » : un point est soit un non-risque
+   justifié, soit corrigé.
+4. **Changelog** : tenir à jour un **`CHANGELOG.md`** racine (format *Keep a Changelog*) à chaque
+   feature ou correctif notable (y compris les corrections de sécurité). C'est là que vit
+   l'historique des findings corrigés, pas dans `docs/security-review.md`.
+5. **Vérifs vertes** avant de pousser : `cargo fmt --check`, `cargo clippy --all-targets
    --all-features -- -D warnings`, `cargo test`, et les tests des SDKs si touchés.
 
 ## Portée

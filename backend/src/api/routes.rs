@@ -166,7 +166,12 @@ pub async fn ingest_logs(
         AppError::bad_request("corps OTLP JSON invalide")
     })?;
 
-    let parsed = otlp_to_logs(req, Utc::now(), &state.limits);
+    let parsed = otlp_to_logs(
+        req,
+        Utc::now(),
+        &state.limits,
+        state.config.max_logs_records,
+    );
     let (total, enqueued) = accept_logs(&state, ip, now, parsed)?;
     let rejected = total - enqueued;
 
@@ -208,7 +213,12 @@ pub async fn ingest_traces(
         AppError::bad_request("corps OTLP JSON invalide")
     })?;
 
-    let parsed = otlp_to_spans(req, Utc::now(), &state.limits);
+    let parsed = otlp_to_spans(
+        req,
+        Utc::now(),
+        &state.limits,
+        state.config.max_logs_records,
+    );
     let (total, enqueued) = accept_spans(&state, ip, now, parsed)?;
     let rejected = total - enqueued;
 
@@ -249,7 +259,12 @@ pub async fn ingest_metrics(
         AppError::bad_request("corps OTLP JSON invalide")
     })?;
 
-    let parsed = otlp_to_metrics(req, Utc::now(), &state.limits);
+    let parsed = otlp_to_metrics(
+        req,
+        Utc::now(),
+        &state.limits,
+        state.config.max_logs_records,
+    );
     let (total, enqueued) = accept_metric_points(&state, ip, now, parsed)?;
     let rejected = total - enqueued;
 

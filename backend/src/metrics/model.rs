@@ -149,12 +149,13 @@ pub fn otlp_to_metrics(
     req: ExportMetricsServiceRequest,
     received_at: DateTime<Utc>,
     limits: &ValidationLimits,
+    max_records: usize,
 ) -> MetricsParse {
     let past = received_at - chrono::Duration::from_std(limits.max_past_skew).unwrap();
     let future = received_at + chrono::Duration::from_std(limits.max_future_skew).unwrap();
 
     let mut out = MetricsParse::default();
-    for rm in req.resource_metrics {
+    'records: for rm in req.resource_metrics {
         let resource_attrs = rm
             .resource
             .map(|r| attrs_to_map(&r.attributes))
@@ -178,6 +179,10 @@ pub fn otlp_to_metrics(
                     .chain(m.sum.map(|s| ("sum", s.data_points)));
                 for (metric_type, points) in numbers {
                     for p in points {
+                        // Garde-fou mémoire (S-8) : borne le Vec à `max_records + 1`.
+                        if out.stored.len() > max_records {
+                            break 'records;
+                        }
                         let time = nanos(p.time_unix_nano.as_ref()).unwrap_or(received_at);
                         if time < past || time > future {
                             out.dropped_skew += 1;
@@ -208,6 +213,10 @@ pub fn otlp_to_metrics(
                 // histogram : HistogramDataPoint (count, sum, bucketCounts, explicitBounds).
                 if let Some(h) = m.histogram {
                     for p in h.data_points {
+                        // Garde-fou mémoire (S-8) : borne le Vec à `max_records + 1`.
+                        if out.stored.len() > max_records {
+                            break 'records;
+                        }
                         let time = nanos(p.time_unix_nano.as_ref()).unwrap_or(received_at);
                         if time < past || time > future {
                             out.dropped_skew += 1;
@@ -478,7 +487,7 @@ mod tests {
     #[test]
     fn flattens_gauge_and_histogram() {
         let now = Utc::now();
-        let parsed = otlp_to_metrics(sample(now), now, &limits());
+        let parsed = otlp_to_metrics(sample(now), now, &limits(), 2_048);
         assert_eq!(parsed.stored.len(), 2);
 
         let gauge = parsed
@@ -520,7 +529,7 @@ mod tests {
             }]}]}]
         }))
         .unwrap();
-        let parsed = otlp_to_metrics(req, now, &limits());
+        let parsed = otlp_to_metrics(req, now, &limits(), 2_048);
         assert_eq!(parsed.stored.len(), 1);
         let p = &parsed.stored[0];
         assert_eq!(p.metric_type, "sum");
@@ -530,8 +539,8 @@ mod tests {
     #[test]
     fn dedup_id_is_stable_for_identical_point() {
         let now = Utc::now();
-        let a = otlp_to_metrics(sample(now), now, &limits());
-        let b = otlp_to_metrics(sample(now), now, &limits());
+        let a = otlp_to_metrics(sample(now), now, &limits(), 2_048);
+        let b = otlp_to_metrics(sample(now), now, &limits(), 2_048);
         assert_eq!(a.stored[0].point_id, b.stored[0].point_id);
         assert_eq!(a.stored[1].point_id, b.stored[1].point_id);
     }
@@ -547,7 +556,7 @@ mod tests {
             ]}]}]
         }))
         .unwrap();
-        let parsed = otlp_to_metrics(req, now, &limits());
+        let parsed = otlp_to_metrics(req, now, &limits(), 2_048);
         assert_eq!(parsed.stored.len(), 0);
     }
 
@@ -563,7 +572,7 @@ mod tests {
             }]}]}]
         }))
         .unwrap();
-        let parsed = otlp_to_metrics(req, now, &limits());
+        let parsed = otlp_to_metrics(req, now, &limits(), 2_048);
         assert_eq!(parsed.stored.len(), 0);
         assert_eq!(parsed.dropped_skew, 1);
     }

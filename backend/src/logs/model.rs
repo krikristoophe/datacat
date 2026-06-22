@@ -112,12 +112,13 @@ pub fn otlp_to_logs(
     req: ExportLogsServiceRequest,
     received_at: DateTime<Utc>,
     limits: &ValidationLimits,
+    max_records: usize,
 ) -> LogsParse {
     let past = received_at - chrono::Duration::from_std(limits.max_past_skew).unwrap();
     let future = received_at + chrono::Duration::from_std(limits.max_future_skew).unwrap();
 
     let mut out = LogsParse::default();
-    for rl in req.resource_logs {
+    'records: for rl in req.resource_logs {
         let resource_attrs = rl
             .resource
             .map(|r| attrs_to_map(&r.attributes))
@@ -127,6 +128,11 @@ pub fn otlp_to_logs(
         for sl in rl.scope_logs {
             let scope_name = sl.scope.and_then(|s| s.name);
             for r in sl.log_records {
+                // Garde-fou mémoire (S-8) : on borne le Vec à `max_records + 1` au lieu d'aplatir
+                // toute la requête ; `accept_logs` rejette ensuite sur le dépassement de compte.
+                if out.stored.len() > max_records {
+                    break 'records;
+                }
                 let log_time = r
                     .time_unix_nano
                     .as_ref()
@@ -358,7 +364,7 @@ mod tests {
     #[test]
     fn flattens_and_correlates() {
         let now = Utc::now();
-        let parsed = otlp_to_logs(sample(now), now, &limits());
+        let parsed = otlp_to_logs(sample(now), now, &limits(), 2_048);
         assert_eq!(parsed.stored.len(), 1);
         let l = &parsed.stored[0];
         assert_eq!(l.service_name.as_deref(), Some("demo-backend"));
@@ -377,8 +383,8 @@ mod tests {
     #[test]
     fn dedup_id_is_stable_for_identical_record() {
         let now = Utc::now();
-        let a = otlp_to_logs(sample(now), now, &limits());
-        let b = otlp_to_logs(sample(now), now, &limits());
+        let a = otlp_to_logs(sample(now), now, &limits(), 2_048);
+        let b = otlp_to_logs(sample(now), now, &limits(), 2_048);
         assert_eq!(a.stored[0].log_id, b.stored[0].log_id);
     }
 
@@ -394,7 +400,7 @@ mod tests {
             }]}]}]
         }))
         .unwrap();
-        let parsed = otlp_to_logs(req, now, &limits());
+        let parsed = otlp_to_logs(req, now, &limits(), 2_048);
         assert_eq!(parsed.stored.len(), 0);
         assert_eq!(parsed.dropped_skew, 1);
     }

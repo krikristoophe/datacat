@@ -152,12 +152,13 @@ pub fn otlp_to_spans(
     req: ExportTraceServiceRequest,
     received_at: DateTime<Utc>,
     limits: &ValidationLimits,
+    max_records: usize,
 ) -> SpansParse {
     let past = received_at - chrono::Duration::from_std(limits.max_past_skew).unwrap();
     let future = received_at + chrono::Duration::from_std(limits.max_future_skew).unwrap();
 
     let mut out = SpansParse::default();
-    for rs in req.resource_spans {
+    'records: for rs in req.resource_spans {
         let resource_attrs = rs
             .resource
             .map(|r| attrs_to_map(&r.attributes))
@@ -167,6 +168,11 @@ pub fn otlp_to_spans(
         for ss in rs.scope_spans {
             let scope_name = ss.scope.and_then(|s| s.name);
             for s in ss.spans {
+                // Garde-fou mémoire (S-8) : borne le Vec à `max_records + 1` ; `accept_spans`
+                // rejette ensuite sur le dépassement de compte.
+                if out.stored.len() > max_records {
+                    break 'records;
+                }
                 let trace_id = s.trace_id.filter(|v| !v.is_empty());
                 let span_id = s.span_id.filter(|v| !v.is_empty());
                 let (Some(trace_id), Some(span_id)) = (trace_id, span_id) else {
@@ -417,7 +423,7 @@ mod tests {
             }]
         }))
         .unwrap();
-        let parsed = otlp_to_spans(req, now, &limits());
+        let parsed = otlp_to_spans(req, now, &limits(), 2_048);
         assert_eq!(parsed.stored.len(), 1);
         let s = &parsed.stored[0];
         assert_eq!(s.trace_id, "5b8efff798038103d269b633813fc60c");
@@ -436,7 +442,7 @@ mod tests {
             "resourceSpans": [{ "scopeSpans": [{ "spans": [{ "name": "orphan" }] }] }]
         }))
         .unwrap();
-        let parsed = otlp_to_spans(req, now, &limits());
+        let parsed = otlp_to_spans(req, now, &limits(), 2_048);
         assert_eq!(parsed.stored.len(), 0);
         assert_eq!(parsed.dropped_invalid, 1);
     }
